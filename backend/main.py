@@ -291,9 +291,11 @@ async def generate_audio_stream(
     async def event_generator():
         try:
             # Emit queue events while waiting
-            while gpu_queue.queue[0] != task_id or gpu_queue.active:
+            while True:
                 pos = gpu_queue.get_position(task_id)
                 yield f"data: {json.dumps({'type': 'queue', 'position': pos})}\n\n"
+                if gpu_queue.queue[0] == task_id and not gpu_queue.active:
+                    break
                 await asyncio.sleep(1.0)
                 
             # Now we are at the front, acquire GPU lock
@@ -383,6 +385,10 @@ async def generate_audio_stream(
             gpu_queue.release(task_id)
     
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+@app.get("/api/queue_status")
+async def queue_status():
+    return {"tasks_in_queue": len(gpu_queue.queue), "is_active": gpu_queue.active}
 
 @app.get("/api/history", response_model=list[HistoryResponse])
 async def list_history():

@@ -17,11 +17,51 @@ window.onload = () => {
 }
 
 // ---------------- UI Helpers ----------------
+let queuePollInterval = null;
+
 function showLoader(text) {
     document.getElementById('loaderText').innerText = text || "正在处理...";
     document.getElementById('loader').style.display = 'flex';
+
+    let qInfo = document.getElementById('loaderQueueInfo');
+    if (!qInfo) {
+        qInfo = document.createElement('div');
+        qInfo.id = 'loaderQueueInfo';
+        qInfo.className = 'text-yellow-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-yellow-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(250,204,21,0.3)]';
+        document.getElementById('loader').appendChild(qInfo);
+    }
+    qInfo.innerText = "正在接入运算节点...";
+
+    if (queuePollInterval) clearInterval(queuePollInterval);
+    pollQueue();
+    queuePollInterval = setInterval(pollQueue, 1500);
 }
+
+async function pollQueue() {
+    let qInfo = document.getElementById('loaderQueueInfo');
+    if (!qInfo) return;
+    try {
+        const res = await fetch(`${API_BASE}/queue_status`);
+        const data = await res.json();
+        const count = data.tasks_in_queue;
+        if (count > 0) {
+            // Note: The one counting down could be our task
+            if (count === 1) {
+                qInfo.innerText = "🚀 您当前排在第一位，GPU 正在全力为您燃烧浮点运算中...";
+                qInfo.className = 'text-emerald-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-emerald-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.3)]';
+            } else {
+                qInfo.innerText = `⏳ 服务器挤爆啦！排队中... 前方大约还有 ${count - 1} 个任务`;
+                qInfo.className = 'text-yellow-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-yellow-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(250,204,21,0.3)]';
+            }
+        }
+    } catch (e) { }
+}
+
 function hideLoader() {
+    if (queuePollInterval) {
+        clearInterval(queuePollInterval);
+        queuePollInterval = null;
+    }
     document.getElementById('loader').style.display = 'none';
 }
 
@@ -454,7 +494,7 @@ async function generateTTS() {
         formData.append('instruct', document.getElementById('inpInstruct').value.trim());
     }
 
-    showLoader("RTX 4060 大模型推理中，加载 Qwen3-TTS 权重...");
+    showLoader("RTX 4090 D 大模型推理中，加载 Qwen3-TTS 权重...");
     document.getElementById('btnGenerate').disabled = true;
 
     try {
@@ -727,11 +767,11 @@ async function loadHistory() {
                         <p class="text-sm text-gray-300 leading-relaxed mb-3">${h.text}</p>
                         
                         <!-- 底部控制栏 -->
-                        <div class="flex items-center justify-between bg-dark/50 rounded-lg p-2 border border-slate-700/50">
+                        <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between bg-dark/50 rounded-lg p-2 gap-2 border border-slate-700/50">
                             <!-- 浏览器原生暗黑播放器 -->
-                            <audio controls src="/audio/history/${h.id}" class="h-8 max-w-[200px] md:max-w-xs scale-90 origin-left brightness-90 contrast-125 sepia-0 hue-rotate-180 invert"></audio>
+                            <audio controls src="/audio/history/${h.id}" class="h-8 w-full sm:max-w-[200px] md:max-w-xs scale-90 origin-left sm:scale-100 brightness-90 contrast-125 sepia-0 hue-rotate-180 invert"></audio>
                             
-                            <div class="flex space-x-1">
+                            <div class="flex space-x-2 justify-end sm:justify-start">
                                 <button onclick="downloadSingle('${h.id}')" class="p-1.5 text-gray-400 hover:text-brand hover:bg-brand/10 rounded transition-colors" title="下载WAV">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                 </button>
