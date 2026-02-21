@@ -161,19 +161,19 @@
 
                     <!-- 步骤2: 填写信息 (音频捕获后显示) -->
                     <div id="step2Form" class="hidden space-y-3 mt-2 border-t border-slate-700/50 pt-3">
-                        <div class="flex items-center justify-between bg-dark border border-slate-600 rounded-lg p-2">
+                        <div class="flex flex-col sm:flex-row items-center justify-between bg-dark border border-slate-600 rounded-lg p-2 gap-2">
                             <audio id="stagedAudioPlayer" controls
-                                class="h-8 w-full max-w-[200px] text-sm brightness-90 contrast-125 sepia-0 hue-rotate-180 invert"></audio>
+                                class="h-8 w-full sm:max-w-[200px] text-sm brightness-90 contrast-125 sepia-0 hue-rotate-180 invert"></audio>
                             <button onclick="discardStagedAudio()"
-                                class="text-xs text-rose-400 hover:text-rose-300 px-3 py-1 font-medium bg-rose-400/10 rounded border border-rose-500/20 ml-2">重录/删除</button>
+                                class="w-full sm:w-auto text-xs text-rose-400 hover:text-rose-300 px-3 py-1.5 font-medium bg-rose-400/10 rounded border border-rose-500/20">重录/删除</button>
                         </div>
                         <input type="text" id="newProfileName" placeholder="命名这个声音 (如: 孙悟空)"
                             class="w-full bg-dark border border-slate-600 rounded-lg px-3 py-2 text-sm focus:ring-1 focus:ring-brand focus:border-brand outline-none transition-all">
 
                         <!-- 语音识别 (Whisper) -->
-                        <div class="flex items-center space-x-2">
+                        <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                             <select id="selTranscribeLang"
-                                class="bg-dark border border-slate-600 rounded-lg px-2 py-1.5 text-xs focus:ring-1 focus:ring-brand outline-none text-gray-300">
+                                class="bg-dark border border-slate-600 rounded-lg px-2 py-2 sm:py-1.5 text-xs focus:ring-1 focus:ring-brand outline-none text-gray-300">
                                 <option value="auto">自动识别语种</option>
                                 <option value="chinese" selected>中文 (Chinese)</option>
                                 <option value="english">英文 (English)</option>
@@ -187,7 +187,7 @@
                                 <option value="italian">意大利文 (Italian)</option>
                             </select>
                             <button id="btnTranscribe" onclick="transcribeStagedAudio()"
-                                class="flex-grow flex items-center justify-center bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 border border-indigo-500/50 rounded-lg px-3 py-1.5 text-xs transition-colors transition-all">
+                                class="flex-grow flex items-center justify-center bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 border border-indigo-500/50 rounded-lg px-3 py-2 sm:py-1.5 text-xs transition-colors transition-all">
                                 <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                         d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z">
@@ -283,9 +283,9 @@
                     </div>
                 </div>
 
-                <div class="flex justify-end gap-3 border-t border-slate-700/50 pt-4 mt-2">
+                <div class="flex flex-col sm:flex-row justify-end gap-3 border-t border-slate-700/50 pt-4 mt-2">
                     <button id="btnGenerate" onclick="generateTTS()"
-                        class="bg-gradient-to-r from-brand to-accent hover:from-blue-400 hover:to-purple-500 text-white font-medium py-2 px-6 rounded-lg shadow-lg shadow-brand/30 transform transition-all active:scale-95 flex items-center">
+                        class="w-full sm:w-auto bg-gradient-to-r from-brand to-accent hover:from-blue-400 hover:to-purple-500 text-white font-medium py-2 px-6 rounded-lg shadow-lg shadow-brand/30 transform transition-all active:scale-95 flex items-center justify-center">
                         <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                 d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z">
@@ -296,7 +296,7 @@
                         合成 (Generate)
                     </button>
                     <button id="btnStreamGenerate" onclick="generateTTSStream()"
-                        class="bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-medium py-2 px-6 rounded-lg shadow-lg shadow-emerald-500/20 transform transition-all active:scale-95 flex items-center">
+                        class="w-full sm:w-auto bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-medium py-2 px-6 rounded-lg shadow-lg shadow-emerald-500/20 transform transition-all active:scale-95 flex items-center justify-center">
                         <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                 d="M13 10V3L4 14h7v7l9-11h-7z">
@@ -354,11 +354,11 @@
 
     <!-- Overlay Loader -->
     <div id="loader"
-        class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] hidden items-center justify-center flex-col">
+        class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] hidden items-center justify-center flex-col px-4 text-center">
         <div
             class="w-16 h-16 border-4 border-brand border-t-transparent rounded-full animate-spin mb-4 shadow-[0_0_15px_rgba(59,130,246,0.5)]">
         </div>
-        <div class="text-xl font-medium text-white shadow-black drop-shadow-lg" id="loaderText">正在使用 RTX 4060 推理生成 ...
+        <div class="text-xl font-medium text-white shadow-black drop-shadow-lg" id="loaderText">正在使用 RTX 4090D 推理生成 ...
         </div>
         <div class="text-sm mt-2 text-gray-300">Qwen3-TTS 算法正在进行高速张量计算</div>
     </div>

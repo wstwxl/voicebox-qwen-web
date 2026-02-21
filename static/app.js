@@ -638,9 +638,20 @@ async function generateTTSStream() {
                 let event;
                 try { event = JSON.parse(jsonStr); } catch { continue; }
 
-                if (event.type === 'info') {
+                if (event.type === 'queue') {
+                    const pos = event.position;
+                    statusDot.className = 'w-2 h-2 rounded-full bg-yellow-400 animate-pulse mr-2';
+                    if (pos === 0) {
+                        statusText.textContent = `服务器挤爆啦！您当前排在第一位，马上为您生成...`;
+                    } else {
+                        statusText.textContent = `服务器挤爆啦！排队中... 前方还有 ${pos} 个任务`;
+                    }
+                }
+
+                else if (event.type === 'info') {
                     streamQueue.totalChunks = event.total_chunks;
-                    statusText.textContent = `流式生成中 (共 ${event.total_chunks} 个语句段落)...`;
+                    statusDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-2';
+                    statusText.textContent = `起算！流式生成中 (共 ${event.total_chunks} 个语句段落)...`;
                 }
 
                 else if (event.type === 'chunk') {

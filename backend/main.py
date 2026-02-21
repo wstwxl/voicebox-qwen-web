@@ -23,7 +23,33 @@ import base64
 import json
 import numpy as np
 
-app = FastAPI(title="Voicebox Local")
+# Global Queue for GPU Tasks to prevent OOM on concurrent access
+class GPUQueue:
+    def __init__(self):
+        self.queue = []
+        self.active = False
+        
+    async def acquire(self, task_id: str):
+        self.queue.append(task_id)
+        # Wait until we are first in line and GPU is not active
+        while self.queue[0] != task_id or self.active:
+            await asyncio.sleep(0.5)
+        self.active = True
+        
+    def release(self, task_id: str):
+        self.active = False
+        if task_id in self.queue:
+            self.queue.remove(task_id)
+            
+    def get_position(self, task_id: str):
+        try:
+            return self.queue.index(task_id)
+        except ValueError:
+            return -1
+
+gpu_queue = GPUQueue()
+
+app = FastAPI(title="Voicebox Local Server")
 
 # Configure paths
 BASE_DIR = Path(__file__).parent.parent
@@ -58,6 +84,8 @@ async def create_profile(
     description: str = Form(""),
     reference_text: str = Form(...)
 ):
+    task_id = str(uuid.uuid4())
+    await gpu_queue.acquire(task_id)
     try:
         profile_id = str(uuid.uuid4())
         profile_folder = PROFILES_DIR / profile_id
@@ -98,6 +126,8 @@ async def create_profile(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        gpu_queue.release(task_id)
 
 @app.get("/api/profiles", response_model=list[ProfileResponse])
 async def list_profiles():
@@ -128,6 +158,8 @@ async def transcribe_audio_endpoint(
     audio: UploadFile = File(...),
     language: str = Form("auto")
 ):
+    task_id = str(uuid.uuid4())
+    await gpu_queue.acquire(task_id)
     try:
         temp_dir = Path("data/temp")
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -150,6 +182,8 @@ async def transcribe_audio_endpoint(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        gpu_queue.release(task_id)
 
 @app.post("/api/generate", response_model=HistoryResponse)
 async def generate_audio(
@@ -159,6 +193,8 @@ async def generate_audio(
     model_size: str = Form("1.7B"),
     instruct: str = Form(None)
 ):
+    task_id = str(uuid.uuid4())
+    await gpu_queue.acquire(task_id)
     try:
         # Get profile
         conn = get_db_connection()
@@ -218,6 +254,8 @@ async def generate_audio(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        gpu_queue.release(task_id)
 
 def split_text_to_chunks(text: str) -> list:
     """Split text into sentence-level chunks for streaming generation."""
@@ -246,8 +284,22 @@ async def generate_audio_stream(
     model_size: str = Form("1.7B"),
     instruct: str = Form(None)
 ):
+    task_id = str(uuid.uuid4())
+    # Register the task in the wait queue
+    gpu_queue.queue.append(task_id)
+
     async def event_generator():
         try:
+            # Emit queue events while waiting
+            while gpu_queue.queue[0] != task_id or gpu_queue.active:
+                pos = gpu_queue.get_position(task_id)
+                yield f"data: {json.dumps({'type': 'queue', 'position': pos})}\n\n"
+                await asyncio.sleep(1.0)
+                
+            # Now we are at the front, acquire GPU lock
+            gpu_queue.active = True
+            
+            # Now execution continues matching before
             conn = get_db_connection()
             c = conn.cursor()
             c.execute("SELECT * FROM profiles WHERE id=?", (profile_id,))
@@ -327,6 +379,8 @@ async def generate_audio_stream(
         except Exception as e:
             traceback.print_exc()
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        finally:
+            gpu_queue.release(task_id)
     
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
