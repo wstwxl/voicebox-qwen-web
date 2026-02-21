@@ -44,15 +44,15 @@ async function pollQueue() {
         const res = await fetch(`${API_BASE}/queue_status`);
         const data = await res.json();
         const count = data.tasks_in_queue;
-        if (count > 0) {
-            // Note: The one counting down could be our task
-            if (count === 1) {
-                qInfo.innerText = "🚀 您当前排在第一位，GPU 正在全力为您燃烧浮点运算中...";
-                qInfo.className = 'text-emerald-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-emerald-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.3)]';
-            } else {
-                qInfo.innerText = `⏳ 服务器挤爆啦！排队中... 前方大约还有 ${count - 1} 个任务`;
-                qInfo.className = 'text-yellow-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-yellow-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(250,204,21,0.3)]';
-            }
+        if (count === 0) {
+            qInfo.innerText = "📡 正在接入 GPU 运算节点...";
+            qInfo.className = 'text-gray-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-gray-500/30 backdrop-blur-md animate-pulse';
+        } else if (count === 1) {
+            qInfo.innerText = "🚀 GPU 正在全力运算中...";
+            qInfo.className = 'text-emerald-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-emerald-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.3)]';
+        } else {
+            qInfo.innerText = `⏳ 服务器繁忙！当前共 ${count} 个任务正在排队处理中...`;
+            qInfo.className = 'text-yellow-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-yellow-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(250,204,21,0.3)]';
         }
     } catch (e) { }
 }
@@ -631,24 +631,19 @@ async function generateTTSStream() {
         formData.append('instruct', document.getElementById('inpInstruct').value.trim());
     }
 
-    // Show stream player UI
+    // UI elements for the stream player
     const playerBox = document.getElementById('streamPlayerBox');
     const statusText = document.getElementById('streamStatusText');
     const statusDot = document.getElementById('streamStatusDot');
     const chunkInfo = document.getElementById('streamChunkInfo');
     const audioPlayer = document.getElementById('streamAudioPlayer');
 
-    playerBox.classList.remove('hidden');
-    statusDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-2';
-    statusText.textContent = '正在连接 GPU 推理引擎...';
-    chunkInfo.textContent = '';
-    audioPlayer.src = '';
+    // Hide stream player first, show full-screen loader with queue polling
+    playerBox.classList.add('hidden');
+    showLoader("正在等待 GPU 资源分配（流式合成）...");
 
     document.getElementById('btnGenerate').disabled = true;
     document.getElementById('btnStreamGenerate').disabled = true;
-
-    // Reset the global queue
-    streamQueue.reset(audioPlayer, statusText, statusDot, chunkInfo);
 
     try {
         const res = await fetch(`${API_BASE}/generate_stream`, {
@@ -657,6 +652,15 @@ async function generateTTSStream() {
         });
 
         if (!res.ok) throw new Error(await res.text());
+
+        // Connection established! Hide loader, show stream player
+        hideLoader();
+        playerBox.classList.remove('hidden');
+        statusDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-2';
+        statusText.textContent = '流式连接已建立，等待数据...';
+        chunkInfo.textContent = '';
+        audioPlayer.src = '';
+        streamQueue.reset(audioPlayer, statusText, statusDot, chunkInfo);
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
