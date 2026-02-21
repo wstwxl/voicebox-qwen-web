@@ -21,7 +21,7 @@
 ```bash
 cd /root/autodl-tmp/
 git clone -b ubuntu22.04 https://github.com/wstwxl/voicebox-qwen-web.git
-cd voicebox-qwen-web/new_project
+cd voicebox-qwen-web
 ```
 
 ### 2. 执行自动化环境点火脚本
