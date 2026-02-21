@@ -41,6 +41,13 @@ chmod +x start_autodl.sh
 ```
 
 ### 3. 打开网页，体验光速生成！
+当上面的执行跑完一切环境后，或者**未来您需要日常随时启动时**，可以直接运行非常清爽的：
+
+```bash
+chmod +x run_autodl.sh
+./run_autodl.sh
+```
+
 当您看到终端里最后两行显示：
 ```text
 INFO:     Application startup complete.
@@ -89,7 +96,8 @@ python download_models.py
 ┣ 📜 requirements.txt       # Pip 运行环境指纹备份 (自带 Ubuntu FlashAttention-2 编译引导)
 ┣ 📜 download_models.py     # HF 依赖模型极速化预下载执行脚本
 ┣ 📜 run_app.bat            # Windows 懒人启动批处理
-┗ 📜 start_autodl.sh        # Ubuntu / AutoDL 一键全环境适配与自定义服务端口启动脚本
+┣ 📜 start_autodl.sh        # Ubuntu / AutoDL [首次专用]全环境适配部署脚本
+┗ 📜 run_autodl.sh          # Ubuntu / AutoDL [日常专用] 一键拉起 FastAPI 服务脚本
 ```
 
 *Have fun generating clones!*
