@@ -5,8 +5,8 @@ echo "    Powered by FastAPI & Qwen3-TTS"
 echo "==================================================="
 
 echo "[1] 安装基本依赖 (如果已安装会自动跳过)..."
-# In AutoDL's 12.4 PyTorch image, just run this:
-pip install -r requirements.txt
+# In AutoDL's images, we specify the official whl index to ensure GPU versions are found even without +cuXXX suffixes
+pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu124
 
 echo "[2] 尝试下载模型 (如果已下载会自动保留)..."
 python download_models.py
