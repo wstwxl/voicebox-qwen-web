@@ -1,8 +1,8 @@
 import os
 import argparse
 
-# Force using domestic Hugging Face mirror to avoid connection timeouts MUST BE BEFORE IMPORT
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+# 使用镜像源，解决当前即使开启加速器，huggingface下载慢的问题
+# os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 from huggingface_hub import snapshot_download
 

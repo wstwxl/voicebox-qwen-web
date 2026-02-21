@@ -34,10 +34,9 @@ pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple --extr
 echo -e "\n[3/5] 从 GitHub 源码全速挂载最新 Qwen3-TTS 驱动..."
 pip install git+https://github.com/QwenLM/Qwen3-TTS.git
 
-echo -e "\n[4/5] 开启防屏蔽镜像，极速拉取 4GB 的预训练模型..."
-# 使用国内防屏蔽魔法下载 Qwen 1.7B, 0.6B 以及 Whisper 模型
-# 由于前面已经执行了 network_turbo 这里再加上 HF_ENDPOINT 是双保险
-HF_ENDPOINT=https://hf-mirror.com python download_models.py
+echo -e "\n[4/5] 利用开启的学术加速，极速拉取 4GB 的预训练模型..."
+# 此时 network_turbo 代理已生效，可直接通过官方渠道全量极速下载
+python download_models.py
 
 echo -e "\n[5/5] ✨ 恭喜！全环境就位，启动 FastAPI 引擎！ ✨"
 echo "==================================================="
@@ -46,4 +45,4 @@ echo "|  点击它，即可在浏览器中体验您的极速 TTS 工作室！   
 echo "==================================================="
 
 # 将 uvicorn 的服务映射到 6006 端口，以配合 AutoDL 的公网隧道
-HF_ENDPOINT=https://hf-mirror.com python -m uvicorn backend.main:app --host 0.0.0.0 --port 6006
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 6006
