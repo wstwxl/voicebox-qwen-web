@@ -36,10 +36,21 @@ class SimpleTTSEngine:
             
             def _load():
                 dtype = torch.float32 if self.device == "cpu" else torch.bfloat16
+                kwargs = {
+                    "device_map": self.device,
+                    "torch_dtype": dtype,
+                }
+                # Request FlashAttention-2 if available in the environment to save VRAM and boost speed
+                try:
+                    import flash_attn
+                    kwargs["attn_implementation"] = "flash_attention_2"
+                    print("[Engine] FlashAttention-2 enabled for acceleration.")
+                except ImportError:
+                    print("[Engine] FlashAttention-2 module not found, using default attention.")
+                    
                 return Qwen3TTSModel.from_pretrained(
                     model_id,
-                    device_map=self.device,
-                    torch_dtype=dtype,
+                    **kwargs
                 )
             self.model = await asyncio.to_thread(_load)
             print("[Engine] Model loaded successfully.")

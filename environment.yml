@@ -1,4 +1,9 @@
 name: voicebox
 channels:
   - defaults
-prefix: C:\Users\Amorwest\miniconda3\envs\voicebox
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+    - -r requirements.txt

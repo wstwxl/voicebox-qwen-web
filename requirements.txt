@@ -17,6 +17,7 @@ fastapi==0.129.0
 ffmpy==1.0.0
 filelock==3.20.0
 flatbuffers==25.12.19
+flash-attn==2.8.3
 fsspec==2025.12.0
 gradio==6.6.0
 gradio_client==2.1.0
@@ -97,3 +98,4 @@ urllib3==2.6.3
 uvicorn==0.41.0
 watchfiles==1.1.1
 websockets==16.0
+wheel==0.46.3

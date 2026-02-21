@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 import uuid
 import os
 import shutil
@@ -18,6 +18,10 @@ from .transcribe_engine import transcribe_engine
 import soundfile as sf
 import traceback
 import asyncio
+import re
+import base64
+import json
+import numpy as np
 
 app = FastAPI(title="Voicebox Local")
 
@@ -214,6 +218,117 @@ async def generate_audio(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+def split_text_to_chunks(text: str) -> list:
+    """Split text into sentence-level chunks for streaming generation."""
+    # Split on Chinese/English sentence endings
+    parts = re.split(r'(?<=[。！？；\n.!?;])', text)
+    chunks = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        # If chunk is very short, merge with previous
+        if chunks and len(chunks[-1]) < 8:
+            chunks[-1] += p
+        else:
+            chunks.append(p)
+    # If no splitting happened, return whole text
+    if not chunks:
+        chunks = [text]
+    return chunks
+
+@app.post("/api/generate_stream")
+async def generate_audio_stream(
+    profile_id: str = Form(...),
+    text: str = Form(...),
+    language: str = Form("auto"),
+    model_size: str = Form("1.7B"),
+    instruct: str = Form(None)
+):
+    async def event_generator():
+        try:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT * FROM profiles WHERE id=?", (profile_id,))
+            profile_row = c.fetchone()
+            
+            if not profile_row:
+                conn.close()
+                yield f"data: {json.dumps({'type': 'error', 'message': 'Profile not found'})}\n\n"
+                return
+                
+            profile_folder = PROFILES_DIR / profile_id
+            prompt_file = profile_folder / f"prompt_{model_size}.pt"
+            
+            if not prompt_file.exists():
+                source_audio = profile_folder / "source.wav"
+                ref_txt_file = profile_folder / "reference.txt"
+                if not source_audio.exists() or not ref_txt_file.exists():
+                    yield f"data: {json.dumps({'type': 'error', 'message': 'Missing source audio for this profile'})}\n\n"
+                    return
+                with open(ref_txt_file, "r", encoding="utf-8") as f:
+                    ref_text = f.read()
+                prompt = await engine.create_prompt(str(source_audio), ref_text, model_size=model_size)
+                torch.save(prompt, prompt_file)
+            else:
+                prompt = torch.load(prompt_file, weights_only=False)
+            
+            chunks = split_text_to_chunks(text)
+            total_chunks = len(chunks)
+            all_audio_arrays = []
+            sample_rate = 24000
+            
+            yield f"data: {json.dumps({'type': 'info', 'total_chunks': total_chunks})}\n\n"
+            
+            for idx, chunk_text in enumerate(chunks):
+                try:
+                    audio_array, sr = await engine.generate_speech(
+                        text=chunk_text,
+                        voice_prompt=prompt,
+                        language=language,
+                        instruct=instruct,
+                        model_size=model_size
+                    )
+                    sample_rate = sr
+                    all_audio_arrays.append(audio_array)
+                    
+                    # Encode audio chunk as base64 wav
+                    buf = io.BytesIO()
+                    sf.write(buf, audio_array, sr, format='WAV')
+                    buf.seek(0)
+                    audio_b64 = base64.b64encode(buf.read()).decode('utf-8')
+                    
+                    yield f"data: {json.dumps({'type': 'chunk', 'index': idx, 'total': total_chunks, 'audio_b64': audio_b64, 'text': chunk_text})}\n\n"
+                except Exception as chunk_err:
+                    traceback.print_exc()
+                    yield f"data: {json.dumps({'type': 'chunk_error', 'index': idx, 'message': str(chunk_err)})}\n\n"
+            
+            # Save complete audio to history
+            if all_audio_arrays:
+                full_audio = np.concatenate(all_audio_arrays)
+                dur = len(full_audio) / sample_rate
+                gen_id = str(uuid.uuid4())
+                audio_file = HISTORY_DIR / f"{gen_id}.wav"
+                sf.write(str(audio_file), full_audio, sample_rate)
+                
+                c.execute(
+                    "INSERT INTO history (id, profile_id, text, language, instruct, audio_path, duration) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (gen_id, profile_id, text, language, instruct, str(audio_file), dur)
+                )
+                conn.commit()
+                conn.close()
+                
+                yield f"data: {json.dumps({'type': 'done', 'history_id': gen_id, 'duration': dur})}\n\n"
+            else:
+                conn.close()
+                yield f"data: {json.dumps({'type': 'error', 'message': 'No audio generated'})}\n\n"
+                
+        except Exception as e:
+            traceback.print_exc()
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @app.get("/api/history", response_model=list[HistoryResponse])
 async def list_history():

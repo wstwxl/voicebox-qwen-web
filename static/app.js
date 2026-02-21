@@ -474,6 +474,217 @@ async function generateTTS() {
     }
 }
 
+// ---------------- Streaming Generation ----------------
+
+// Global stream playback controller
+const streamQueue = {
+    chunks: [],
+    playIndex: 0,
+    isPlaying: false,
+    streamDone: false,  // All chunks received from backend
+    audioPlayer: null,
+    statusText: null,
+    statusDot: null,
+    chunkInfo: null,
+    totalChunks: 0,
+
+    reset(audioPlayer, statusText, statusDot, chunkInfo) {
+        this.chunks = [];
+        this.playIndex = 0;
+        this.isPlaying = false;
+        this.streamDone = false;
+        this.audioPlayer = audioPlayer;
+        this.statusText = statusText;
+        this.statusDot = statusDot;
+        this.chunkInfo = chunkInfo;
+        this.totalChunks = 0;
+
+        // Set up the single, persistent onended handler
+        this.audioPlayer.onended = () => this._onTrackEnded();
+    },
+
+    addChunk(blobUrl) {
+        this.chunks.push(blobUrl);
+        // If not currently playing, start
+        if (!this.isPlaying) {
+            this._playNext();
+        }
+    },
+
+    markStreamDone() {
+        this.streamDone = true;
+    },
+
+    _playNext() {
+        if (this.playIndex >= this.chunks.length) {
+            // Nothing to play right now
+            this.isPlaying = false;
+
+            if (!this.streamDone) {
+                // More chunks may arrive, poll
+                this._pollForNext();
+            }
+            return;
+        }
+
+        this.isPlaying = true;
+        const url = this.chunks[this.playIndex];
+
+        if (this.statusText) {
+            this.statusText.textContent = `⚡ 正在播放第 ${this.playIndex + 1}/${this.totalChunks} 段...`;
+        }
+
+        this.audioPlayer.src = url;
+        const playPromise = this.audioPlayer.play();
+        if (playPromise) {
+            playPromise.catch(err => {
+                console.warn('Autoplay blocked or error:', err);
+                // Try again after a small delay
+                setTimeout(() => {
+                    this.audioPlayer.play().catch(() => { });
+                }, 300);
+            });
+        }
+    },
+
+    _onTrackEnded() {
+        this.playIndex++;
+        this._playNext();
+    },
+
+    _pollForNext() {
+        const targetIndex = this.playIndex;
+        const pollId = setInterval(() => {
+            if (targetIndex < this.chunks.length) {
+                clearInterval(pollId);
+                this._playNext();
+            } else if (this.streamDone) {
+                // Stream is done and nothing left - all played
+                clearInterval(pollId);
+            }
+        }, 150);
+        // Safety: don't poll forever (60 seconds max wait for a chunk)
+        setTimeout(() => clearInterval(pollId), 60000);
+    }
+};
+
+async function generateTTSStream() {
+    const profile_id = selProfile.value;
+    const model_size = document.getElementById('selModel').value;
+    const language = document.getElementById('selTTSLang').value;
+    const text = document.getElementById('inpText').value.trim();
+    const instruct = document.getElementById('inpInstruct').value.trim();
+
+    if (!profile_id) return alert('请先选择一个提取好的音色！');
+    if (!text) return alert('请输入要合成的文本！');
+    if (model_size === '0.6B' && instruct) {
+        alert('温馨提示：0.6B 极速模型不支持情感变调，将清除此项。');
+        document.getElementById('inpInstruct').value = '';
+    }
+
+    const formData = new FormData();
+    formData.append('profile_id', profile_id);
+    formData.append('model_size', model_size);
+    formData.append('language', language);
+    formData.append('text', text);
+    if (document.getElementById('inpInstruct').value.trim()) {
+        formData.append('instruct', document.getElementById('inpInstruct').value.trim());
+    }
+
+    // Show stream player UI
+    const playerBox = document.getElementById('streamPlayerBox');
+    const statusText = document.getElementById('streamStatusText');
+    const statusDot = document.getElementById('streamStatusDot');
+    const chunkInfo = document.getElementById('streamChunkInfo');
+    const audioPlayer = document.getElementById('streamAudioPlayer');
+
+    playerBox.classList.remove('hidden');
+    statusDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-2';
+    statusText.textContent = '正在连接 GPU 推理引擎...';
+    chunkInfo.textContent = '';
+    audioPlayer.src = '';
+
+    document.getElementById('btnGenerate').disabled = true;
+    document.getElementById('btnStreamGenerate').disabled = true;
+
+    // Reset the global queue
+    streamQueue.reset(audioPlayer, statusText, statusDot, chunkInfo);
+
+    try {
+        const res = await fetch(`${API_BASE}/generate_stream`, {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!res.ok) throw new Error(await res.text());
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            // Parse SSE events
+            const lines = buffer.split('\n\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const jsonStr = line.slice(6);
+                let event;
+                try { event = JSON.parse(jsonStr); } catch { continue; }
+
+                if (event.type === 'info') {
+                    streamQueue.totalChunks = event.total_chunks;
+                    statusText.textContent = `流式生成中 (共 ${event.total_chunks} 个语句段落)...`;
+                }
+
+                else if (event.type === 'chunk') {
+                    chunkInfo.textContent = `${event.index + 1}/${event.total} 段已生成`;
+
+                    // Convert base64 to blob URL
+                    const binaryStr = atob(event.audio_b64);
+                    const bytes = new Uint8Array(binaryStr.length);
+                    for (let i = 0; i < binaryStr.length; i++) {
+                        bytes[i] = binaryStr.charCodeAt(i);
+                    }
+                    const blob = new Blob([bytes], { type: 'audio/wav' });
+                    const url = URL.createObjectURL(blob);
+
+                    // Push to global queue, it auto-plays
+                    streamQueue.addChunk(url);
+                }
+
+                else if (event.type === 'done') {
+                    streamQueue.markStreamDone();
+                    chunkInfo.textContent = `全部 ${streamQueue.totalChunks} 段已生成`;
+                    statusText.textContent = `✅ 全部生成完成！总时长 ${event.duration.toFixed(1)}s`;
+                    statusDot.className = 'w-2 h-2 rounded-full bg-blue-400 mr-2';
+                    await loadHistory();
+                }
+
+                else if (event.type === 'error') {
+                    streamQueue.markStreamDone();
+                    statusText.textContent = `❌ 错误: ${event.message}`;
+                    statusDot.className = 'w-2 h-2 rounded-full bg-rose-400 mr-2';
+                }
+            }
+        }
+    } catch (e) {
+        console.error(e);
+        streamQueue.markStreamDone();
+        statusText.textContent = `❌ 流式生成失败: ${e.message}`;
+        statusDot.className = 'w-2 h-2 rounded-full bg-rose-400 mr-2';
+    } finally {
+        document.getElementById('btnGenerate').disabled = false;
+        document.getElementById('btnStreamGenerate').disabled = false;
+    }
+}
+
 // ---------------- History & Download ----------------
 
 async function loadHistory() {
