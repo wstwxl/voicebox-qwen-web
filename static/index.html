@@ -105,7 +105,7 @@
 
                 <!-- 音色新增面板 -->
                 <div class="bg-slate-800/50 rounded-xl p-4 border border-slate-700 mb-6">
-                    <h3 class="text-sm font-medium text-gray-300 mb-3">提取新音色 (1-10秒即可)</h3>
+                    <h3 class="text-sm font-medium text-gray-300 mb-3">提取新音色 (10-20秒即可)</h3>
 
                     <!-- 步骤1: 捕获音频 -->
                     <div id="step1Audio" class="space-y-3">
@@ -310,12 +310,14 @@
                 <div id="streamPlayerBox" class="hidden mt-4 p-3 rounded-xl bg-dark/80 border border-emerald-700/40">
                     <div class="flex items-center justify-between mb-2">
                         <span class="text-xs text-emerald-400 font-medium flex items-center">
-                            <span id="streamStatusDot" class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-2"></span>
+                            <span id="streamStatusDot"
+                                class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-2"></span>
                             <span id="streamStatusText">流式生成中...</span>
                         </span>
                         <span id="streamChunkInfo" class="text-[10px] text-gray-500"></span>
                     </div>
-                    <audio id="streamAudioPlayer" controls class="w-full h-8 brightness-90 contrast-125 hue-rotate-180 invert"></audio>
+                    <audio id="streamAudioPlayer" controls
+                        class="w-full h-8 brightness-90 contrast-125 hue-rotate-180 invert"></audio>
                 </div>
             </div>
         </section>
