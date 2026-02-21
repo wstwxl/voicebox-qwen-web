@@ -13,4 +13,4 @@ python download_models.py
 
 echo "[3] 启动 FastAPI 服务 (跑在开放的 6006 端口上)..."
 echo "[INFO] 在 AutoDL 控制台找到 【自定义服务】，点击访问！"
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 6006
+HF_ENDPOINT=https://hf-mirror.com python -m uvicorn backend.main:app --host 0.0.0.0 --port 6006

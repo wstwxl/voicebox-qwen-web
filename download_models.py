@@ -1,9 +1,10 @@
 import os
 import argparse
-from huggingface_hub import snapshot_download
 
-# Force using domestic Hugging Face mirror to avoid connection timeouts
+# Force using domestic Hugging Face mirror to avoid connection timeouts MUST BE BEFORE IMPORT
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
+from huggingface_hub import snapshot_download
 def download_models(download_qwen_1_7b=True, download_qwen_0_6b=True, download_whisper=True):
     print("This script will download required AI models from Hugging Face into your local cache.")
     print("Ensure you have a stable and fast internet connection.")
