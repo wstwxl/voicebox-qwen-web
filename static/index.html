@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh" class="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voicebox Qwen3 - Local Studio</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: '#0f172a',
+                        card: '#1e293b',
+                        brand: '#3b82f6',
+                        accent: '#8b5cf6'
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+        }
+
+        .glass {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .scroll-hidden::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .scroll-hidden::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .scroll-hidden::-webkit-scrollbar-thumb {
+            background: #334155;
+            border-radius: 4px;
+        }
+
+        /* 录音波浪动画 */
+        .recording-dot {
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+            }
+
+            70% {
+                transform: scale(1);
+                box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+            }
+
+            100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+            }
+        }
+    </style>
+</head>
+
+<body class="bg-dark text-gray-100 min-h-screen selection:bg-brand selection:text-white">
+
+    <!-- 顶部导航 -->
+    <header class="glass sticky top-0 z-50 px-6 py-4 flex justify-between items-center shadow-lg">
+        <div class="flex items-center space-x-3">
+            <div
+                class="w-10 h-10 bg-gradient-to-br from-brand to-accent rounded-xl flex items-center justify-center text-xl font-bold tracking-tighter shadow-lg shadow-brand/20">
+                VB</div>
+            <h1 class="text-2xl font-semibold bg-clip-text text-transparent bg-gradient-to-r from-gray-100 to-gray-400">
+                Voicebox Studio <span
+                    class="text-sm font-normal text-brand ml-2 border border-brand/30 bg-brand/10 px-2 py-0.5 rounded-full">Qwen3-TTS
+                    RTX</span></h1>
+        </div>
+        <div class="text-sm text-gray-400 flex items-center space-x-2">
+            <span class="w-2 h-2 rounded-full bg-green-500 recording-dot"></span>
+            <span>Local Server Active</span>
+        </div>
+    </header>
+
+    <main class="container mx-auto px-4 py-8 max-w-7xl grid grid-cols-1 lg:grid-cols-12 gap-8">
+
+        <!-- 左侧：音色管理区与推理区 -->
+        <section class="lg:col-span-5 space-y-6">
+            <div class="glass rounded-2xl p-6 shadow-xl">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-xl font-semibold flex items-center"><svg class="w-5 h-5 mr-2 text-accent"
+                            fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z">
+                            </path>
+                        </svg> 音色管理 (Profiles)</h2>
+                    <span id="profileCount" class="text-xs bg-gray-800 text-gray-300 px-2 py-1 rounded-full">0</span>
+                </div>
+
+                <!-- 音色新增面板 -->
+                <div class="bg-slate-800/50 rounded-xl p-4 border border-slate-700 mb-6">
+                    <h3 class="text-sm font-medium text-gray-300 mb-3">提取新音色 (1-10秒即可)</h3>
+
+                    <!-- 步骤1: 捕获音频 -->
+                    <div id="step1Audio" class="space-y-3">
+                        <div class="grid grid-cols-3 gap-2">
+                            <!-- 上传 -->
+                            <button onclick="document.getElementById('fileUpload').click()"
+                                class="flex flex-col items-center justify-center p-2 rounded-lg bg-slate-700/50 hover:bg-brand/20 border border-slate-600 hover:border-brand/50 transition-all text-xs text-gray-300 group">
+                                <svg class="w-5 h-5 mb-1 text-gray-400 group-hover:text-brand" fill="none"
+                                    stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+                                </svg>
+                                选文件
+                            </button>
+                            <input type="file" id="fileUpload" accept="audio/*" class="hidden"
+                                onchange="handleFileUpload(event)">
+
+                            <!-- 麦克风 -->
+                            <button id="btnRecMic" onclick="toggleMicRecording()"
+                                class="flex flex-col items-center justify-center p-2 rounded-lg bg-slate-700/50 hover:bg-rose-500/20 border border-slate-600 hover:border-rose-500/50 transition-all text-xs text-gray-300 group">
+                                <svg id="iconRecMic" class="w-5 h-5 mb-1 text-gray-400 group-hover:text-rose-400"
+                                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z">
+                                    </path>
+                                </svg>
+                                录麦克风
+                            </button>
+
+                            <!-- 系统声音 -->
+                            <button id="btnRecSys" onclick="toggleSysRecording()"
+                                class="flex flex-col items-center justify-center p-2 rounded-lg bg-slate-700/50 hover:bg-accent/20 border border-slate-600 hover:border-accent/50 transition-all text-xs text-gray-300 group">
+                                <svg id="iconRecSys" class="w-5 h-5 mb-1 text-gray-400 group-hover:text-accent"
+                                    fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z">
+                                    </path>
+                                </svg>
+                                录系统声
+                            </button>
+                        </div>
+
+                        <!-- 录音提示/状态 -->
+                        <div id="recordingStatus"
+                            class="hidden text-xs text-center py-1 mt-1 font-medium bg-gray-800 rounded text-rose-400 flex items-center justify-center">
+                            <span class="w-2 h-2 rounded-full bg-rose-500 mr-2 recording-dot"></span> <span
+                                id="recordingText">正在录音...</span> (点击停止)
+                        </div>
+                        <!-- 系统录音提示 -->
+                        <div id="sysRecHelp" class="hidden text-[10px] text-gray-400 mt-1 pb-1">⚠️
+                            弹窗时请选择"整个屏幕"或某个"标签页"，并<b>必须勾选"分享系统音频"</b>。视频会被丢弃，只提取音频。</div>
+                    </div>
+
+                    <!-- 步骤2: 填写信息 (音频捕获后显示) -->
+                    <div id="step2Form" class="hidden space-y-3 mt-2 border-t border-slate-700/50 pt-3">
+                        <div class="flex items-center justify-between bg-dark border border-slate-600 rounded-lg p-2">
+                            <audio id="stagedAudioPlayer" controls
+                                class="h-8 w-full max-w-[200px] text-sm brightness-90 contrast-125 sepia-0 hue-rotate-180 invert"></audio>
+                            <button onclick="discardStagedAudio()"
+                                class="text-xs text-rose-400 hover:text-rose-300 px-3 py-1 font-medium bg-rose-400/10 rounded border border-rose-500/20 ml-2">重录/删除</button>
+                        </div>
+                        <input type="text" id="newProfileName" placeholder="命名这个声音 (如: 孙悟空)"
+                            class="w-full bg-dark border border-slate-600 rounded-lg px-3 py-2 text-sm focus:ring-1 focus:ring-brand focus:border-brand outline-none transition-all">
+
+                        <!-- 语音识别 (Whisper) -->
+                        <div class="flex items-center space-x-2">
+                            <select id="selTranscribeLang"
+                                class="bg-dark border border-slate-600 rounded-lg px-2 py-1.5 text-xs focus:ring-1 focus:ring-brand outline-none text-gray-300">
+                                <option value="auto">自动识别语种</option>
+                                <option value="chinese" selected>中文 (Chinese)</option>
+                                <option value="english">英文 (English)</option>
+                                <option value="japanese">日文 (Japanese)</option>
+                                <option value="korean">韩文 (Korean)</option>
+                                <option value="german">德文 (German)</option>
+                                <option value="french">法文 (French)</option>
+                                <option value="russian">俄文 (Russian)</option>
+                                <option value="portuguese">葡萄牙文 (Portuguese)</option>
+                                <option value="spanish">西班牙文 (Spanish)</option>
+                                <option value="italian">意大利文 (Italian)</option>
+                            </select>
+                            <button id="btnTranscribe" onclick="transcribeStagedAudio()"
+                                class="flex-grow flex items-center justify-center bg-indigo-500/20 hover:bg-indigo-500/40 text-indigo-300 border border-indigo-500/50 rounded-lg px-3 py-1.5 text-xs transition-colors transition-all">
+                                <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z">
+                                    </path>
+                                </svg>
+                                使用 Whisper 自动听写
+                            </button>
+                        </div>
+
+                        <textarea id="newProfileRefText" placeholder="这段声音里说的是什么字？(参考文本, 必须准确)" rows="3"
+                            class="w-full bg-dark border border-slate-600 rounded-lg px-3 py-2 text-sm focus:ring-1 focus:ring-brand focus:border-brand outline-none transition-all resize-none"></textarea>
+
+                        <button onclick="submitNewProfile()"
+                            class="w-full bg-brand hover:bg-blue-500 text-white font-medium py-2 rounded-lg transition-colors flex justify-center items-center shadow-lg shadow-brand/20">
+                            创建音色特征张量
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 已存音色列表 -->
+                <div class="space-y-2 max-h-[50vh] overflow-y-auto scroll-hidden pr-1" id="profileList">
+                    <!-- JS 生成列表 -->
+                    <div class="text-center text-sm text-gray-500 py-4">加载中...</div>
+                </div>
+            </div>
+
+            <!-- 附加在左侧的 发声推理 (Inference) -->
+            <div class="glass rounded-2xl p-6 shadow-xl border-t border-t-brand/30 relative overflow-hidden">
+                <!-- 装饰光晕 -->
+                <div
+                    class="absolute -top-32 -right-32 w-64 h-64 bg-brand/20 blur-[100px] rounded-full pointer-events-none">
+                </div>
+
+                <h2 class="text-2xl font-semibold mb-6 flex items-center">
+                    <svg class="w-6 h-6 mr-2 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z">
+                        </path>
+                    </svg>
+                    发声推理 (Inference)
+                </h2>
+
+                <div class="flex flex-col gap-4 mb-4">
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-400 mb-1">使用音色</label>
+                            <select id="selProfile"
+                                class="w-full bg-dark border border-slate-600 rounded-lg px-3 py-2 text-sm focus:ring-1 focus:ring-brand outline-none appearance-none cursor-pointer">
+                                <option value="" disabled selected>-- 请选择刚才提取的音色 --</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-400 mb-1">选择模型</label>
+                            <select id="selModel"
+                                class="w-full bg-dark border border-slate-600 rounded-lg px-3 py-2 text-sm focus:ring-1 focus:ring-brand outline-none appearance-none cursor-pointer">
+                                <option value="1.7B" selected>1.7B 满血模型 (拟真度高/支持情感指令)</option>
+                                <option value="0.6B">0.6B 极速模型 (合成速度极快/无情感指令)</option>
+                            </select>
+                            <p class="text-[10px] text-gray-500 mt-1 leading-tight">
+                                注：切换模型时，若此前未生成过该模型的提示向量，后台将会智能加载原声切片进行实时提取重算（约耗时增加 3-5 秒）。</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-400 mb-1">选择目标语种</label>
+                            <select id="selTTSLang"
+                                class="w-full bg-dark border border-slate-600 rounded-lg px-3 py-2 text-sm focus:ring-1 focus:ring-brand outline-none appearance-none cursor-pointer">
+                                <option value="auto">自动 (跟随参考文本/大模型预测)</option>
+                                <option value="chinese" selected>中文 (Chinese)</option>
+                                <option value="english">英文 (English)</option>
+                                <option value="japanese">日文 (Japanese)</option>
+                                <option value="korean">韩文 (Korean)</option>
+                                <option value="german">德文 (German)</option>
+                                <option value="french">法文 (French)</option>
+                                <option value="russian">俄文 (Russian)</option>
+                                <option value="portuguese">葡萄牙文 (Portuguese)</option>
+                                <option value="spanish">西班牙文 (Spanish)</option>
+                                <option value="italian">意大利文 (Italian)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-400 mb-1">情感指示词 (可选)</label>
+                            <input type="text" id="inpInstruct" placeholder="e.g. 开心地说、非常生气、用讲故事的语气..."
+                                class="w-full bg-dark border border-slate-600 rounded-lg px-3 py-2 text-sm focus:ring-1 focus:ring-accent outline-none">
+                            <p class="text-[10px] text-gray-500 mt-1 leading-tight">Delivery instructions
+                                能够强行控制克隆音色的发音情绪。<b>(仅在 1.7B 模型下生效)</b></p>
+                        </div>
+                    </div>
+
+                    <div class="flex flex-col mt-2">
+                        <label class="block text-sm font-medium text-gray-400 mb-1">要合成的文本</label>
+                        <textarea id="inpText" rows="4"
+                            class="w-full bg-dark border border-slate-600 rounded-lg px-4 py-3 text-base focus:ring-1 focus:ring-brand outline-none resize-none flex-grow"
+                            placeholder="输入要让 AI 读的文字..."></textarea>
+                    </div>
+                </div>
+
+                <div class="flex justify-end border-t border-slate-700/50 pt-4 mt-2">
+                    <button id="btnGenerate" onclick="generateTTS()"
+                        class="bg-gradient-to-r from-brand to-accent hover:from-blue-400 hover:to-purple-500 text-white font-medium py-2 px-8 rounded-lg shadow-lg shadow-brand/30 transform transition-all active:scale-95 flex items-center">
+                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z">
+                            </path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        开始合成 (Generate)
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- 右侧：生成历史展示区 -->
+        <section class="lg:col-span-7 space-y-6">
+            <!-- 历史生成列表 -->
+            <div class="glass rounded-2xl p-6 shadow-xl h-[calc(100vh-8rem)] flex flex-col sticky top-24">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-xl font-semibold flex items-center"><svg class="w-5 h-5 mr-2 text-gray-300"
+                            fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg> 生成历史</h2>
+                    <div class="flex space-x-2">
+                        <button onclick="downloadSelected()"
+                            class="text-xs bg-slate-700 hover:bg-slate-600 border border-slate-600 text-gray-200 px-3 py-1.5 rounded-lg transition-colors flex items-center">
+                            <svg class="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                            </svg>
+                            批量下载选中
+                        </button>
+                    </div>
+                </div>
+
+                <div class="space-y-3 overflow-y-auto scroll-hidden pr-2 flex-grow" id="historyList">
+                    <!-- JS 生成历史记录 -->
+                    <div class="text-center text-sm text-gray-500 py-4">无历史记录</div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Overlay Loader -->
+    <div id="loader"
+        class="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] hidden items-center justify-center flex-col">
+        <div
+            class="w-16 h-16 border-4 border-brand border-t-transparent rounded-full animate-spin mb-4 shadow-[0_0_15px_rgba(59,130,246,0.5)]">
+        </div>
+        <div class="text-xl font-medium text-white shadow-black drop-shadow-lg" id="loaderText">正在使用 RTX 4060 推理生成 ...
+        </div>
+        <div class="text-sm mt-2 text-gray-300">Qwen3-TTS 算法正在进行高速张量计算</div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="/app.js"></script>
+</body>
+
+</html>
