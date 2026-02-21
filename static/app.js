@@ -18,40 +18,65 @@ window.onload = () => {
 
 // ---------------- UI Helpers ----------------
 let queuePollInterval = null;
+let currentTaskId = null;
 
+// Simple loader (no GPU queue) for non-GPU tasks like file conversion
 function showLoader(text) {
     document.getElementById('loaderText').innerText = text || "正在处理...";
     document.getElementById('loader').style.display = 'flex';
+    // Clear any leftover queue info
+    let qInfo = document.getElementById('loaderQueueInfo');
+    if (qInfo) qInfo.innerText = '';
+}
 
+// GPU loader: register a personal queue ticket, then poll YOUR exact position
+async function showGpuLoader(text) {
+    document.getElementById('loaderText').innerText = text || "正在处理...";
+    document.getElementById('loader').style.display = 'flex';
+
+    // Create or get the queue info element
     let qInfo = document.getElementById('loaderQueueInfo');
     if (!qInfo) {
         qInfo = document.createElement('div');
         qInfo.id = 'loaderQueueInfo';
-        qInfo.className = 'text-yellow-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-yellow-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(250,204,21,0.3)]';
+        qInfo.className = 'text-gray-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-gray-500/30 backdrop-blur-md animate-pulse';
         document.getElementById('loader').appendChild(qInfo);
     }
-    qInfo.innerText = "正在接入运算节点...";
+    qInfo.innerText = "📡 正在向服务器领取排队号...";
 
+    // Register a personal queue ticket with the server
+    try {
+        const res = await fetch(`${API_BASE}/queue_register`, { method: 'POST' });
+        const data = await res.json();
+        currentTaskId = data.task_id;
+    } catch (e) {
+        currentTaskId = null;
+    }
+
+    // Start polling MY position
     if (queuePollInterval) clearInterval(queuePollInterval);
-    pollQueue();
-    queuePollInterval = setInterval(pollQueue, 1500);
+    pollMyPosition();
+    queuePollInterval = setInterval(pollMyPosition, 1500);
 }
 
-async function pollQueue() {
+async function pollMyPosition() {
     let qInfo = document.getElementById('loaderQueueInfo');
-    if (!qInfo) return;
+    if (!qInfo || !currentTaskId) return;
     try {
-        const res = await fetch(`${API_BASE}/queue_status`);
+        const res = await fetch(`${API_BASE}/queue_position/${currentTaskId}`);
         const data = await res.json();
-        const count = data.tasks_in_queue;
-        if (count === 0) {
-            qInfo.innerText = "📡 正在接入 GPU 运算节点...";
-            qInfo.className = 'text-gray-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-gray-500/30 backdrop-blur-md animate-pulse';
-        } else if (count === 1) {
-            qInfo.innerText = "🚀 GPU 正在全力运算中...";
+        const pos = data.position;   // 0-based index: 0 = first in line
+        const total = data.total;
+
+        if (pos === -1) {
+            // Our task was already processed and removed
+            qInfo.innerText = "✅ 任务已被处理！";
+            qInfo.className = 'text-emerald-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-emerald-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.3)]';
+        } else if (pos === 0) {
+            qInfo.innerText = `🚀 GPU 正在为您全力运算中...`;
             qInfo.className = 'text-emerald-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-emerald-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.3)]';
         } else {
-            qInfo.innerText = `⏳ 服务器繁忙！当前共 ${count} 个任务正在排队处理中...`;
+            qInfo.innerText = `⏳ 排队中... 您当前排在第 ${pos + 1} 位（前方还有 ${pos} 个任务）`;
             qInfo.className = 'text-yellow-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-yellow-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(250,204,21,0.3)]';
         }
     } catch (e) { }
@@ -62,6 +87,7 @@ function hideLoader() {
         clearInterval(queuePollInterval);
         queuePollInterval = null;
     }
+    currentTaskId = null;
     document.getElementById('loader').style.display = 'none';
 }
 
@@ -202,7 +228,8 @@ async function uploadAudioBlob(blob, filename) {
     formData.append('reference_text', input.text);
     formData.append('description', 'Local Studio UI created');
 
-    showLoader("正在发送给 GPU 分析提取声音特征 (1024/2048维张量) ...");
+    await showGpuLoader("正在发送给 GPU 分析提取声音特征 (1024/2048维张量) ...");
+    if (currentTaskId) formData.append('task_id', currentTaskId);
 
     try {
         const res = await fetch(`${API_BASE}/profiles`, {
@@ -494,7 +521,8 @@ async function generateTTS() {
         formData.append('instruct', document.getElementById('inpInstruct').value.trim());
     }
 
-    showLoader("RTX 4090 D 大模型推理中，加载 Qwen3-TTS 权重...");
+    await showGpuLoader("RTX 4090D 大模型推理中，加载 Qwen3-TTS 权重...");
+    if (currentTaskId) formData.append('task_id', currentTaskId);
     document.getElementById('btnGenerate').disabled = true;
 
     try {
@@ -638,9 +666,10 @@ async function generateTTSStream() {
     const chunkInfo = document.getElementById('streamChunkInfo');
     const audioPlayer = document.getElementById('streamAudioPlayer');
 
-    // Hide stream player first, show full-screen loader with queue polling
+    // Hide stream player first, show full-screen GPU loader with personal queue ticket
     playerBox.classList.add('hidden');
-    showLoader("正在等待 GPU 资源分配（流式合成）...");
+    await showGpuLoader("正在等待 GPU 资源分配（流式合成）...");
+    if (currentTaskId) formData.append('task_id', currentTaskId);
 
     document.getElementById('btnGenerate').disabled = true;
     document.getElementById('btnStreamGenerate').disabled = true;

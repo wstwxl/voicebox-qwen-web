@@ -30,7 +30,9 @@ class GPUQueue:
         self.active = False
         
     async def acquire(self, task_id: str):
-        self.queue.append(task_id)
+        # Support pre-registered task_ids (already in queue from /api/queue_register)
+        if task_id not in self.queue:
+            self.queue.append(task_id)
         # Wait until we are first in line and GPU is not active
         while self.queue[0] != task_id or self.active:
             await asyncio.sleep(0.5)
@@ -77,14 +79,30 @@ async def startup_event():
     print("Voicebox Local Server Started on port 8888")
 
 
+@app.post("/api/queue_register")
+async def queue_register():
+    """Frontend calls this BEFORE sending GPU work to get a personal queue ticket."""
+    task_id = str(uuid.uuid4())
+    gpu_queue.queue.append(task_id)
+    pos = gpu_queue.get_position(task_id)
+    return {"task_id": task_id, "position": pos, "total": len(gpu_queue.queue)}
+
+@app.get("/api/queue_position/{task_id}")
+async def queue_position(task_id: str):
+    """Get the position of a specific task in the queue."""
+    pos = gpu_queue.get_position(task_id)
+    return {"task_id": task_id, "position": pos, "total": len(gpu_queue.queue), "is_active": gpu_queue.active}
+
 @app.post("/api/profiles", response_model=ProfileResponse)
 async def create_profile(
     audio: UploadFile = File(...),
     name: str = Form(...),
     description: str = Form(""),
-    reference_text: str = Form(...)
+    reference_text: str = Form(...),
+    task_id: str = Form(None)
 ):
-    task_id = str(uuid.uuid4())
+    if not task_id:
+        task_id = str(uuid.uuid4())
     await gpu_queue.acquire(task_id)
     try:
         profile_id = str(uuid.uuid4())
@@ -156,9 +174,11 @@ async def delete_profile(profile_id: str):
 @app.post("/api/transcribe")
 async def transcribe_audio_endpoint(
     audio: UploadFile = File(...),
-    language: str = Form("auto")
+    language: str = Form("auto"),
+    task_id: str = Form(None)
 ):
-    task_id = str(uuid.uuid4())
+    if not task_id:
+        task_id = str(uuid.uuid4())
     await gpu_queue.acquire(task_id)
     try:
         temp_dir = Path("data/temp")
@@ -191,9 +211,11 @@ async def generate_audio(
     text: str = Form(...),
     language: str = Form("auto"),
     model_size: str = Form("1.7B"),
-    instruct: str = Form(None)
+    instruct: str = Form(None),
+    task_id: str = Form(None)
 ):
-    task_id = str(uuid.uuid4())
+    if not task_id:
+        task_id = str(uuid.uuid4())
     await gpu_queue.acquire(task_id)
     try:
         # Get profile
@@ -282,11 +304,14 @@ async def generate_audio_stream(
     text: str = Form(...),
     language: str = Form("auto"),
     model_size: str = Form("1.7B"),
-    instruct: str = Form(None)
+    instruct: str = Form(None),
+    task_id: str = Form(None)
 ):
-    task_id = str(uuid.uuid4())
-    # Register the task in the wait queue
-    gpu_queue.queue.append(task_id)
+    if not task_id:
+        task_id = str(uuid.uuid4())
+    # Register the task in the wait queue (supports pre-registered tickets)
+    if task_id not in gpu_queue.queue:
+        gpu_queue.queue.append(task_id)
 
     async def event_generator():
         try:
