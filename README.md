@@ -50,6 +50,7 @@ python download_models.py
 
 ## 🚀 启动与使用 (Usage)
 
+### 方案 A：如果您在本地 Windows 运行
 在环境激活的状态下，在项目的根目录执行主服务器启动令：
 
 ```bash
@@ -58,7 +59,17 @@ uvicorn backend.main:app --host 127.0.0.1 --port 9090
 或在 Windows 环境下直接双击根目录为您制作好的集成化脚本：
 👉 **双击运行 `run_app.bat`** 即可自动激活环境拉起服务器！
 
-当控制台提示 `Uvicorn running on http://127.0.0.1:9090`，请在您的浏览器 (Edge / Chrome / Safari) 打开此地址畅聊创作！
+当控制台提示 `Uvicorn running on http://127.0.0.1:9090`，请在您的浏览器打开此地址畅聊创作！
+
+### 方案 B：如果您在 Ubuntu / AutoDL 云服务器运行 (推荐)
+如果您为了获得更强的生成速度将本分支代码部署到了类似 AutoDL 的云服务器上，我们为您提供了一键启动的 Bash 脚本。
+此脚本会自动执行 `pip install`, 下载模型，并在公网端口 `6006` 启动服务：
+
+```bash
+chmod +x start_autodl.sh
+./start_autodl.sh
+```
+然后在 AutoDL 的控制台容器实例中找到**【自定义服务】**按钮，点击即可直接在外网打开网页进行流式合成体验！
 
 ---
 ## 目录结构
@@ -68,9 +79,10 @@ uvicorn backend.main:app --host 127.0.0.1 --port 9090
 ┣ 📂 static/                # 极致轻量级前端（纯手工 HTML+TailwindCSS+原生 JS）
 ┣ 📂 data/                  # （由系统动态生成保管）所有历史听写原件及合成作品数据库
 ┣ 📜 environment.yml        # Conda 运行环境指纹备份
-┣ 📜 requirements.txt       # Pip 运行环境指纹备份
+┣ 📜 requirements.txt       # Pip 运行环境指纹备份 (自带 Ubuntu FlashAttention-2 编译引导)
 ┣ 📜 download_models.py     # HF 依赖模型极速化预下载执行脚本
-┗ 📜 run_app.bat            # Windows 懒人启动批处理
+┣ 📜 run_app.bat            # Windows 懒人启动批处理
+┗ 📜 start_autodl.sh        # Ubuntu / AutoDL 一键全环境适配与自定义端口启动脚本
 ```
 
 *Have fun generating clones!*
