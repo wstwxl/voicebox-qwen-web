@@ -1,65 +1,96 @@
-# Voicebox Qwen Web UI - 公网部署指南
+# Voicebox Qwen Web UI - 公网部署与高级网络调优指南
 
-本指南将教你如何将部署在个人主机（如家用 Ubuntu）上的 Voicebox Qwen Web UI 项目，通过**内网穿透技术**安全地发布到互联网上，让全世界的人都能通过你自己的域名访问。
+本指南将教你如何将部署在个人主机（如家用 Ubuntu）上的 Voicebox Qwen Web UI 项目发布到互联网上。
 
-## 🎯 为什么需要内网穿透？
-如果你只有一台个人家庭电脑（有强大的显卡）和一个独立域名，但**没有公网 IP** 和云服务器，你无法直接将域名解析到你家里的路由器。
-此时，使用 **Cloudflare Tunnels** 是最佳的免费解决方案。它可以建立一条从你个人电脑直达 Cloudflare 边缘节点的加密隧道，并且**自带 HTTPS 加密保护**。
-
-## 📋 前提条件
-1. 已经成功在本机（如 Ubuntu 20.04）上依据 `setup.sh` 配置好环境。
-2. 运行 `./run.sh` 能够成功启动服务并在本地 `http://127.0.0.1:6006` 正常访问。
-3. 拥有一个顶级域名（例如在阿里云、腾讯云购买的域名，如 `amorwest.cn`）。
-4. 注册一个免费的 [Cloudflare 账号](https://dash.cloudflare.com/sign-up)。
+为了解决国内外网络环境的延迟与 Web 设备必须使用 HTTPS (安全上下文) 的问题，本文档详细记录了一套基于**“Cloudflare 接管 DNS + SakuraFrp 国内极速穿透 + 手动颁发正式全站 SSL 证书”**的终极极客解决方案。
 
 ---
 
-## 🚀 部署步骤
+## 🎯 为什么需要这套复杂的架构？
+1. **Cloudflare 官方 Tunnels（方案 A 废除原因）**：虽然 CF 自带免费内网穿透与全球 SSL 证书，但其针对国内免费用户未开放大陆节点。国内用户访问会被强制绕路至美国西海岸机房（如 `sjc06` 圣何塞），物理延迟高达 300ms+ 且疯狂丢包，直接导致语音播放卡顿、后台服务反馈严重滞后。
+2. **SakuraFrp / 樱花穿透（当前选择）**：国内出色的内网穿透服务商。通过选择其提供的“新加坡”或“国内/香港”节点，网络延迟可骤降至 50ms 左右，彻底解决语音卡顿和后台响应慢的问题。
+3. **WebRTC SSL 证书限制**：现代浏览器为了保护隐私，一旦发现你没有使用真实合法的 `https://` 加密协议，将直接屏蔽（设为 undefined）麦克风的调用权限。如果使用未受认证的“自签发伪造证书”，电脑端浏览器则会被 HSTS（HTTP 严格传输安全）机制死死拦截。
+4. **终极方案目标**：我们既要国内穿透节点的“极速低延迟”，又要 Cloudflare 的“秒级解析”，还要“完美不报错的小绿锁证书”来解禁麦克风。
 
-### 步骤 1：将域名的 DNS 解析交由 Cloudflare 接管
-1. 登录 Cloudflare 后台，点击 **"Add a Site"** 并输入你的域名（如 `amorwest.cn`）。
-2. 选择 **Free（免费）套餐**。
-3. Cloudflare 会扫描域名并为你分配两个**专属 Nameserver (NS) 服务器**（例如 `xxx.ns.cloudflare.com`）。复制它们。
-4. 登录你购买域名的服务商控制台（如阿里云），进入域名的 **DNS 管理 / 修改 DNS 服务器** 设置页面。
-5. 将原有的 DNS 服务器删除，替换为刚刚复制的两个 Cloudflare NS 服务器。
-6. 等待生效（通常几分钟），直到 Cloudflare 页面显示该域名状态为 **Active（已激活）**。
+---
 
-### 步骤 2：在本地服务器安装 Cloudflared 客户端
-在运行该模型后端服务的 Ubuntu 终端中执行：
+## 🚀 终极部署全流程说明
+
+### 步骤 1：让 Cloudflare 管理你的独立域名
+1. 准备一个个人域名（如 `amorwest.cn`）。
+2. 在 Cloudflare 注册账号，添加该域名，并前往你原域名服务商（如阿里云/腾讯云），将其 DNS 域名服务器修改为 Cloudflare 指定的服务器。
+3. 等待 Cloudflare 面板显示域名状态为 **Active（已激活）**。
+
+### 步骤 2：在 SakuraFrp 面板创建建站隧道
+1. 注册并登录 [SakuraFrp (樱花穿透)](https://www.natfrp.com)。
+2. 进入“服务 -> 隧道列表”，点击**“+ 创建隧道”**。
+3. 核心配置：
+   - **节点类型**：选择离你较近的亚洲节点（如新加坡或香港节点，免备案且低延迟）。
+   - **隧道类型**：必须选择 **`HTTPS 建站隧道`**。
+   - **本地 IP**：填 `127.0.0.1`。
+   - **本地端口**：填 `6006`（本项目的后端端口）。
+   - **绑定域名**：填你的域名（例如 `amorwest.cn` 或 `api.amorwest.cn`）。
+   - **创建 HTTP 重定向**：建议选 `301` 或 `307` 强制重定向（这样当用户在手机端手打 `http://` 时，会直接跳转被保护的 HTTPS 里，确保麦克风可用）。
+   - **自动 HTTPS**：选择 `禁用`（因为我们会手动签发全站真证书）。
+4. 保存后，记录分配给你的 CNAME 网址（如 `xxx.frp-can.com`）和用于唤起隧道的**启动指令**（如 `-f uxwwjcx...`）。
+
+### 步骤 3：在 Cloudflare 添加 CNAME 解析（灰云极为关键！）
+1. 回到 Cloudflare 的 **DNS -> Records** 面板。
+2. 添加一条记录（Add record）：
+   - 类型：`CNAME`
+   - 名称：填 `@`（或你绑定的前缀子域名）。
+   - 目标：粘贴刚刚分配的樱花 CNAME 网址。
+3. 🚨 **绝对避坑重点**：
+   **请务必将后面那朵橙色的云朵图标点一下，让它变成纯灰色的 `仅 DNS (DNS only)`**！！若不关掉橙色云代理功能，你的流量依然会被 Cloudflare 劫持到美国跑一圈，花钱买的新加坡低延迟将全盘作废。
+
+### 步骤 4：通过 acme.sh 签发终极合法 SSL 证书
+因为我们使用内网穿透且关闭了 HTTP (80 端口) 入口，常规的自动证书方案经常失败，导致系统下发“伪造证书”，从而触发浏览器恐怖的 HSTS “不安全连接”红色拦截页。
+在此我们利用 DNS 验证挑战，在 Ubuntu 手工拿下一张 90 天有效期的合法证书。
+
+在 Ubuntu 终端执行：
 ```bash
-# 下载并安装 cloudflared
-wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
-sudo dpkg -i cloudflared-linux-amd64.deb
+# 1. 安装自动发证神器 acme.sh
+curl -s https://get.acme.sh | sh
+source ~/.bashrc
+
+# 2. 注册并在机构申请证书（ZeroSSL 或 Let's Encrypt）
+~/.acme.sh/acme.sh --register-account -m 你的邮箱@example.com
+~/.acme.sh/acme.sh --issue -d amorwest.cn --dns --yes-I-know-dns-manual-mode-enough-go-ahead-please
 ```
+此时，安全机构会临时给你一串**密码签（TXT value）**，以证明你是这个域名的持有人。你需要：
+1. 立刻去 Cloudflare 添加一条 **`TXT`** 记录。
+2. 名称填写要求的前缀：`_acme-challenge`。
+3. 目标（Content）填写那一长串乱码密码单。
 
-### 步骤 3：登录授权并创建隧道
-1. **登录账号**：在终端输入 `cloudflared tunnel login`。
-   终端会输出一段验证 URL，复制并在浏览器中打开，选择你刚接入的域名进行授权。
-2. **创建隧道**：在终端输入 `cloudflared tunnel create voicebox`。
-   (其中 `voicebox` 是隧道的名字，可自定义)
-3. **绑定域名**：在终端输入 `cloudflared tunnel route dns voicebox amorwest.cn`。
-   (如果你想用子域名访问，可以改为 `api.amorwest.cn` 或 `tts.amorwest.cn`)
+**完成验证并提取最终证书：**
+保存后，回来执行续签命令进行最终查验：
+```bash
+~/.acme.sh/acme.sh --renew -d amorwest.cn --yes-I-know-dns-manual-mode-enough-go-ahead-please
+```
+见到 `Success` 后，代表合法的证书文件已经生成！
+将它们拷贝至项目的根目录下（因为后续我们需要将它们与 frpc 放在一起）：
+```bash
+cp ~/.acme.sh/xxxx_ecc/fullchain.cer /path/to/voice_project/amorwest.cn.crt
+cp ~/.acme.sh/xxxx_ecc/ amorwest.cn.key /path/to/voice_project/amorwest.cn.key
+```
+*(注意：请用你的实际域名重命名这两个文件，即 `你的域名.crt` 和 `你的域名.key`)*
 
-### 步骤 4：启动项目与隧道！
-至此所有配置结束，请开**两个终端窗口**：
-1. **终端A (启动项目)**：运行你的服务 `./run.sh`
-2. **终端B (启动隧道转发)**：将本地的 6006 端口流量转发给这个隧道。
-   ```bash
-   cloudflared tunnel run --url http://127.0.0.1:6006 voicebox
-   ```
-大功告成！现在所有人都可以通过你的域名（如 `https://amorwest.cn`）访问你在本地主机的应用了！
+### 步骤 5：启动本项目的服务与极速隧道
+进入你存放代码和 `frpc` 二进制文件的项目主目录。
 
----
+**终端窗口 1：启动 AI 项目服务**
+```bash
+./run.sh
+```
+确保显示正在监听 `Uvicorn running on http://0.0.0.0:6006`。
 
-## 💡 踩坑与常见问题 (FAQ)
+**终端窗口 2：启动 SakuraFrp 隧道**
+前往 SakuraFrp 后台获取针对 `Linux amd64` 的最新客户端并赋权后，启动通道：
+```bash
+chmod +x frpc
+./frpc -f 你的专属密钥参数
+```
+当终端输出 `已为 xxxx 加载证书 [CN = amorwest.cn...]` 以及 `隧道启动成功` 时。
 
-### 1. 绑定域名时报错 `code: 1003 ... An A, AAAA, or CNAME record ... already exists.`
-**原因**：这通常是因为你之前用该域名做过其他项目（例如 GitHub Pages），DNS 设置中仍然遗留有旧的 A 记录或 CNAME 记录。同一个域名节点不允许同时配置多种冲突的路由。
-**解决**：登录 Cloudflare 后台 -> DNS -> Records，将冲突域名 (`amorwest.cn`) 的旧 A 记录或 CNAME 记录**全部删除**。然后重新运行绑定域名的命令即可。
-
-### 2. 网页能打开，但点击“使用麦克风”报错 `Cannot read properties of undefined (reading 'getUserMedia')`
-**原因**：这是浏览器的安全限制。现代浏览器（如 Chrome, Edge）为了防范隐私泄露，**严禁在非 HTTPS（即 `http://`）环境下调用麦克风或摄像头等隐私设备**。如果你用 HTTP 访问，浏览器直接会把媒体接口屏蔽掉。
-**解决**：
-由于 Cloudflare Tunnels 已经为你自动配置了免费的 SSL 证书：
-1. 在浏览器地址栏，强制手动输入 **`https://`** 开头的完整网址访问即可。
-2. **⭐️ 强烈推荐的最佳实践**：登录 Cloudflare 后台，进入 **SSL/TLS -> Edge Certificates** 栏目，找到 **"Always Use HTTPS"** 并将开关**打开**。这样无论用户输入什么，都会被强制重定向到安全的 HTTPS 环境中，彻底杜绝此类错误。
+**🎉 恭喜你，大功告成！**
+此时用世界上任意角落的手机或电脑访问 `https://你的域名`。由于走的是极速通道且挂载了完全合法的前端证书，网络延迟已经骤降至两位数，且浏览器没有任何警报提示，麦克风将绝对完美地被授权收音工作！
