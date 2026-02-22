@@ -67,51 +67,331 @@ def gpu_memory_report():
         return f"📊 显存: {used:.1f}/{total:.1f} GB ({pct:.0f}%)"
     return "📊 显存: N/A (无CUDA)"
 
-# ============ GPU 任务队列管理器 ============
-class GPUQueue:
-    def __init__(self):
-        self.queue = []
-        self.active = False
-        self._task_meta = {}  # {task_id: {name, ip, start_time}}
-        
-    def register_meta(self, task_id: str, task_name: str, ip: str):
-        self._task_meta[task_id] = {"name": task_name, "ip": ip, "start_time": None}
-        
-    async def acquire(self, task_id: str):
-        if task_id not in self.queue:
-            self.queue.append(task_id)
-        meta = self._task_meta.get(task_id, {"name": "未知任务", "ip": "?"})
-        pos = self.get_position(task_id)
-        total = len(self.queue)
-        if pos > 0:
-            print(f"⏳ [任务排队] {meta.get('name')} | 来自 {meta.get('ip')} | 排在第 {pos+1} 位（前方 {pos} 个任务）")
-        while self.queue[0] != task_id or self.active:
-            await asyncio.sleep(0.5)
-        self.active = True
-        meta["start_time"] = time.time()
-        print(f"🔥 [任务开始] {meta.get('name')} | 来自 {meta.get('ip')} | 队列: {len(self.queue)} 个任务")
-        
-    def release(self, task_id: str):
-        meta = self._task_meta.pop(task_id, {"name": "未知任务", "ip": "?"})
-        elapsed = time.time() - meta["start_time"] if meta.get("start_time") else 0
-        self.active = False
-        if task_id in self.queue:
-            self.queue.remove(task_id)
-        remaining = len(self.queue)
-        mem = gpu_memory_report()
-        print(f"✅ [任务完成] {meta.get('name')} | 来自 {meta.get('ip')} | 耗时 {elapsed:.1f}秒 | {mem}")
-        if remaining == 0:
-            print(f"💤 [服务器空闲] 当前无任务运行、无任务排队 | 在线设备: {device_tracker.get_online_count()} 台")
-        else:
-            print(f"   └─ 队列中还有 {remaining} 个任务等待处理")
-            
-    def get_position(self, task_id: str):
-        try:
-            return self.queue.index(task_id)
-        except ValueError:
-            return -1
+# ============ GPU 任务队列管理器 (重构版) ============
+job_queue = asyncio.Queue()
 
-gpu_queue = GPUQueue()
+# Thread-safe dictionary to track state of each job
+# { task_id: {"status": "queued"|"processing"|"done"|"error", "result": dict, "error": str, "type": "...", "created_at": float, "name": str, "ip": str} }
+job_statuses = {}
+
+# 全局流式缓冲池 (供流式合成 API 与后台 Worker 传递 chunk 使用)
+stream_buffers = {} # { task_id: asyncio.Queue() }
+
+async def bg_gpu_worker():
+    """全局唯一的 GPU 任务守护者协程。无论外部 HTTP 怎么断，它都不会死，直到算完存盘。"""
+    print("🚀 [后台守护进程] GPU 任务流水线已启动。开始监听全局队列...")
+    while True:
+        try:
+            task = await job_queue.get()
+            task_id = task["task_id"]
+            task_type = task["type"]
+            meta_name = task.get("name", "未知任务")
+            ip = task.get("ip", "?")
+            
+            # 如果请求已经被前端明确地标记为已丢弃(在等待期间刷走了)
+            if job_statuses.get(task_id, {}).get("status") == "cancelled":
+                print(f"⏩ [任务跳过] {meta_name} | 来自 {ip} | 任务已被客户端丢弃，跳过执行。")
+                job_queue.task_done()
+                continue
+                
+            job_statuses[task_id]["status"] = "processing"
+            start_t = time.time()
+            
+            # 查一下排在队列第一位等待的还有哪些
+            pos_info = f" | 队列剩余待办: {job_queue.qsize()}"
+            print(f"🔥 [任务开始] {meta_name} | 来自 {ip}{pos_info}")
+            
+            try:
+                if task_type == "extract_profile":
+                    res = await _handle_extract_profile(task)
+                    job_statuses[task_id]["status"] = "done"
+                    job_statuses[task_id]["result"] = res
+                    
+                elif task_type == "transcribe":
+                    res = await _handle_transcribe(task)
+                    job_statuses[task_id]["status"] = "done"
+                    job_statuses[task_id]["result"] = res
+                    
+                elif task_type == "generate":
+                    res = await _handle_generate(task)
+                    job_statuses[task_id]["status"] = "done"
+                    job_statuses[task_id]["result"] = res
+                    
+                elif task_type == "generate_stream":
+                    # 流式处理特殊：边生边推。如果外部断了(buffer被清)，后台会在 yield 时察觉并清理退出
+                    await _handle_generate_stream(task)
+                    # done / error 状态由 _handle_generate_stream 内部负责标注
+                    
+                else:
+                    raise ValueError(f"Unknown task type: {task_type}")
+                    
+            except Exception as e:
+                traceback.print_exc()
+                job_statuses[task_id]["status"] = "error"
+                job_statuses[task_id]["error"] = str(e)
+            finally:
+                elapsed = time.time() - start_t
+                mem = gpu_memory_report()
+                if job_statuses.get(task_id, {}).get("status") == "error":
+                    print(f"❌ [任务报错] {meta_name} | 来自 {ip} | 耗时 {elapsed:.1f}秒 | {mem}")
+                else:
+                    print(f"✅ [任务完成] {meta_name} | 来自 {ip} | 耗时 {elapsed:.1f}秒 | {mem}")
+                
+                # 清理工作
+                job_queue.task_done()
+                # 提示空闲
+                if job_queue.empty():
+                    print(f"💤 [服务器空闲] 当前无任务运行、无排队任务 | 在线设备: {device_tracker.get_online_count()} 台")
+                
+        except asyncio.CancelledError:
+            print("⚠️ [后台守护进程] 接收到退出信号。")
+            break
+        except Exception as e:
+            print(f"💀 [后台守护进程严重错误重启守护] {str(e)}")
+            traceback.print_exc()
+            await asyncio.sleep(1)
+
+
+# ------- Background Worker Implementations -------
+
+async def _handle_extract_profile(task):
+    profile_id = task["profile_id"]
+    name = task["name"]
+    description = task.get("description", "")
+    reference_text = task["reference_text"]
+    
+    profile_folder = PROFILES_DIR / profile_id
+    source_audio_path = profile_folder / "source.wav"
+    
+    # Already saved source.wav and reference.txt by the endpoint handler
+    prompt_1_7B = await engine.create_prompt(str(source_audio_path), reference_text, model_size="1.7B")
+    prompt_1_7B_path = profile_folder / "prompt_1.7B.pt"
+    torch.save(prompt_1_7B, prompt_1_7B_path)
+    
+    prompt_0_6B = await engine.create_prompt(str(source_audio_path), reference_text, model_size="0.6B")
+    prompt_0_6B_path = profile_folder / "prompt_0.6B.pt"
+    torch.save(prompt_0_6B, prompt_0_6B_path)
+    
+    # Save to DB
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO profiles (id, name, description, prompt_path) VALUES (?, ?, ?, ?)",
+        (profile_id, name, description, str(prompt_1_7B_path))
+    )
+    conn.commit()
+    
+    c.execute("SELECT * FROM profiles WHERE id=?", (profile_id,))
+    row = c.fetchone()
+    conn.close()
+    return dict(row)
+
+async def _handle_transcribe(task):
+    temp_file = task["temp_file"]
+    language = task["language"]
+    
+    def _do_transcribe():
+        return transcribe_engine.transcribe(str(temp_file), language)
+        
+    transcription = await asyncio.to_thread(_do_transcribe)
+    
+    if Path(temp_file).exists():
+        Path(temp_file).unlink()
+        
+    return {"text": transcription}
+
+async def _handle_generate(task):
+    profile_id = task["profile_id"]
+    text = task["text"]
+    language = task["language"]
+    model_size = task["model_size"]
+    instruct = task.get("instruct")
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT * FROM profiles WHERE id=?", (profile_id,))
+    profile_row = c.fetchone()
+    
+    if not profile_row:
+        conn.close()
+        raise ValueError("数据库中找不到该音色配置")
+        
+    profile_folder = PROFILES_DIR / profile_id
+    prompt_file = profile_folder / f"prompt_{model_size}.pt"
+    
+    if not prompt_file.exists():
+        source_audio = profile_folder / "source.wav"
+        ref_txt_file = profile_folder / "reference.txt"
+        if not source_audio.exists() or not ref_txt_file.exists():
+            conn.close()
+            raise ValueError(f"缺少旧版原音频文件，无法为您重新生成 {model_size} 张量。")
+        with open(ref_txt_file, "r", encoding="utf-8") as f:
+            ref_text = f.read()
+        prompt = await engine.create_prompt(str(source_audio), ref_text, model_size=model_size)
+        torch.save(prompt, prompt_file)
+    else:
+        prompt = torch.load(prompt_file, weights_only=False)
+    
+    audio_array, sr = await engine.generate_speech(
+        text=text, 
+        voice_prompt=prompt, 
+        language=language, 
+        instruct=instruct,
+        model_size=model_size
+    )
+    dur = len(audio_array) / sr
+    
+    gen_id = str(uuid.uuid4())
+    audio_file = HISTORY_DIR / f"{gen_id}.wav"
+    sf.write(str(audio_file), audio_array, sr)
+    
+    c.execute(
+        "INSERT INTO history (id, profile_id, text, language, instruct, audio_path, duration) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (gen_id, profile_id, text, language, instruct, str(audio_file), dur)
+    )
+    conn.commit()
+    
+    c.execute("SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name FROM history h LEFT JOIN profiles p ON h.profile_id = p.id WHERE h.id=?", (gen_id,))
+    history_row = c.fetchone()
+    conn.close()
+    
+    return dict(history_row)
+
+async def _handle_generate_stream(task):
+    task_id = task["task_id"]
+    profile_id = task["profile_id"]
+    text = task["text"]
+    language = task["language"]
+    model_size = task["model_size"]
+    instruct = task.get("instruct")
+    
+    q = stream_buffers.get(task_id)
+    if not q:
+        job_statuses[task_id]["status"] = "error"
+        job_statuses[task_id]["error"] = "内部缓冲队列未找到"
+        return
+
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("SELECT * FROM profiles WHERE id=?", (profile_id,))
+        profile_row = c.fetchone()
+        
+        if not profile_row:
+            await q.put({"type": "error", "message": "数据库中找不到该音色配置"})
+            job_statuses[task_id]["status"] = "error"
+            job_statuses[task_id]["error"] = "Profile not found"
+            conn.close()
+            return
+            
+        profile_folder = PROFILES_DIR / profile_id
+        prompt_file = profile_folder / f"prompt_{model_size}.pt"
+        
+        if not prompt_file.exists():
+            source_audio = profile_folder / "source.wav"
+            ref_txt_file = profile_folder / "reference.txt"
+            if not source_audio.exists() or not ref_txt_file.exists():
+                err_msg = "缺少原音频，无法重新推断该模型体积下的张量。"
+                await q.put({"type": "error", "message": err_msg})
+                job_statuses[task_id]["status"] = "error"
+                job_statuses[task_id]["error"] = err_msg
+                conn.close()
+                return
+            with open(ref_txt_file, "r", encoding="utf-8") as f:
+                ref_text = f.read()
+            prompt = await engine.create_prompt(str(source_audio), ref_text, model_size=model_size)
+            torch.save(prompt, prompt_file)
+        else:
+            prompt = torch.load(prompt_file, weights_only=False)
+        
+        # 分句缓冲
+        parts = re.split(r'(?<=[。！？；\n.!?;])', text)
+        chunks = []
+        for p in parts:
+            p = p.strip()
+            if not p:
+                continue
+            if chunks and len(chunks[-1]) < 8:
+                chunks[-1] += p
+            else:
+                chunks.append(p)
+        if not chunks:
+            chunks = [text]
+            
+        total_chunks = len(chunks)
+        all_audio_arrays = []
+        sample_rate = 24000
+        
+        await q.put({"type": "info", "total_chunks": total_chunks})
+        
+        for idx, chunk_text in enumerate(chunks):
+            try:
+                # 检查客户端是否还在等待，如果断开了我们就停止后续流的生成工作
+                if task_id not in stream_buffers:
+                    print(f"🛑 [流式中止] 客户端已断开，放弃后续推理。任务ID: {task_id[:8]}")
+                    break
+                    
+                audio_array, sr = await engine.generate_speech(
+                    text=chunk_text,
+                    voice_prompt=prompt,
+                    language=language,
+                    instruct=instruct,
+                    model_size=model_size
+                )
+                sample_rate = sr
+                all_audio_arrays.append(audio_array)
+                
+                buf = io.BytesIO()
+                sf.write(buf, audio_array, sr, format='WAV')
+                buf.seek(0)
+                audio_b64 = base64.b64encode(buf.read()).decode('utf-8')
+                
+                await q.put({"type": "chunk", "index": idx, "total": total_chunks, "audio_b64": audio_b64, "text": chunk_text})
+                
+            except Exception as chunk_err:
+                traceback.print_exc()
+                await q.put({"type": "chunk_error", "index": idx, "message": str(chunk_err)})
+        
+        # 保存完整历史 (如果生成了至少一段)
+        if all_audio_arrays:
+            full_audio = np.concatenate(all_audio_arrays)
+            dur = len(full_audio) / sample_rate
+            gen_id = str(uuid.uuid4())
+            audio_file = HISTORY_DIR / f"{gen_id}.wav"
+            sf.write(str(audio_file), full_audio, sample_rate)
+            
+            c.execute(
+                "INSERT INTO history (id, profile_id, text, language, instruct, audio_path, duration) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (gen_id, profile_id, text, language, instruct, str(audio_file), dur)
+            )
+            conn.commit()
+            
+            await q.put({"type": "done", "history_id": gen_id, "duration": dur})
+            
+            # 记录到总库状态中
+            job_statuses[task_id]["status"] = "done"
+            c.execute("SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name FROM history h LEFT JOIN profiles p ON h.profile_id = p.id WHERE h.id=?", (gen_id,))
+            job_statuses[task_id]["result"] = dict(c.fetchone())
+            
+        else:
+            job_statuses[task_id]["status"] = "error"
+            job_statuses[task_id]["error"] = "No chunks generated"
+            await q.put({"type": "error", "message": "未能生成任何音频片段。"})
+            
+        conn.close()
+        
+    except Exception as e:
+        traceback.print_exc()
+        job_statuses[task_id]["status"] = "error"
+        job_statuses[task_id]["error"] = str(e)
+        if task_id in stream_buffers:
+            await stream_buffers[task_id].put({"type": "error", "message": str(e)})
+
+    finally:
+        # 发送终结符(重要，让 HTTP 返回流跳出阻塞轮询)
+        if task_id in stream_buffers:
+            await stream_buffers[task_id].put(None)
+
 
 app = FastAPI(title="Voicebox Local Server")
 
@@ -145,6 +425,9 @@ app.add_middleware(DeviceTrackingMiddleware)
 
 @app.on_event("startup")
 async def startup_event():
+    # 启动后台工作线程
+    asyncio.create_task(bg_gpu_worker())
+    
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
@@ -212,15 +495,50 @@ async def startup_event():
 async def queue_register():
     """Frontend calls this BEFORE sending GPU work to get a personal queue ticket."""
     task_id = str(uuid.uuid4())
-    gpu_queue.queue.append(task_id)
-    pos = gpu_queue.get_position(task_id)
-    return {"task_id": task_id, "position": pos, "total": len(gpu_queue.queue)}
+    job_statuses[task_id] = {"status": "queued", "created_at": time.time(), "result": None, "error": None}
+    
+    # Estimate it will be placed at the end of the queue
+    sz = job_queue.qsize()
+    return {"task_id": task_id, "position": sz + 1, "total": sz + 1}
 
 @app.get("/api/queue_position/{task_id}")
 async def queue_position(task_id: str):
-    """Get the position of a specific task in the queue."""
-    pos = gpu_queue.get_position(task_id)
-    return {"task_id": task_id, "position": pos, "total": len(gpu_queue.queue), "is_active": gpu_queue.active}
+    """Get the position and status of a specific task in the queue."""
+    status_info = job_statuses.get(task_id)
+    if not status_info:
+        return {"task_id": task_id, "position": -1, "status": "unknown"}
+        
+    status = status_info["status"]
+    if status in ["done", "error", "cancelled"]:
+        return {"task_id": task_id, "position": -1, "status": status, "result": status_info.get("result"), "error": status_info.get("error")}
+        
+    if status == "processing":
+        return {"task_id": task_id, "position": 0, "status": status}
+        
+    # Find exact position in the asyncio Queue, ignoring cancelled tasks
+    position = -1
+    valid_count = 0
+    for t in job_queue._queue:
+        tid = t.get("task_id")
+        t_status = job_statuses.get(tid, {})
+        if t_status.get("status") != "cancelled":
+            valid_count += 1
+            if tid == task_id:
+                position = valid_count
+                break
+            
+    if position == -1:
+        # Request is registered but not yet put in the queue
+        position = valid_count + 1
+        
+    return {"task_id": task_id, "position": position, "status": status}
+    
+@app.delete("/api/queue_cancel/{task_id}")
+async def queue_cancel(task_id: str):
+    """Client gave up waiting, mark as cancelled so worker can skip it."""
+    if task_id in job_statuses and job_statuses[task_id]["status"] == "queued":
+        job_statuses[task_id]["status"] = "cancelled"
+    return {"message": "cancelled"}
 
 @app.post("/api/profiles", response_model=ProfileResponse)
 async def create_profile(
@@ -233,50 +551,51 @@ async def create_profile(
 ):
     if not task_id:
         task_id = str(uuid.uuid4())
-    gpu_queue.register_meta(task_id, "音色提取", request.client.host if hasattr(request, 'client') and request.client else "?")
-    await gpu_queue.acquire(task_id)
-    try:
-        profile_id = str(uuid.uuid4())
-        profile_folder = PROFILES_DIR / profile_id
-        profile_folder.mkdir(parents=True, exist_ok=True)
+        job_statuses[task_id] = {"status": "queued", "created_at": time.time(), "result": None, "error": None}
         
-        source_audio_path = profile_folder / "source.wav"
-        with open(source_audio_path, "wb") as buffer:
-            shutil.copyfileobj(audio.file, buffer)
-            
-        # Save reference text side-by-side
-        with open(profile_folder / "reference.txt", "w", encoding="utf-8") as f:
-            f.write(reference_text)
-            
-        # Create prompts for both 1.7B and 0.6B dynamically
-        prompt_1_7B = await engine.create_prompt(str(source_audio_path), reference_text, model_size="1.7B")
-        prompt_1_7B_path = profile_folder / "prompt_1.7B.pt"
-        torch.save(prompt_1_7B, prompt_1_7B_path)
+    profile_id = str(uuid.uuid4())
+    profile_folder = PROFILES_DIR / profile_id
+    profile_folder.mkdir(parents=True, exist_ok=True)
+    
+    source_audio_path = profile_folder / "source.wav"
+    with open(source_audio_path, "wb") as buffer:
+        shutil.copyfileobj(audio.file, buffer)
         
-        prompt_0_6B = await engine.create_prompt(str(source_audio_path), reference_text, model_size="0.6B")
-        prompt_0_6B_path = profile_folder / "prompt_0.6B.pt"
-        torch.save(prompt_0_6B, prompt_0_6B_path)
+    with open(profile_folder / "reference.txt", "w", encoding="utf-8") as f:
+        f.write(reference_text)
         
-        # Save to DB
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO profiles (id, name, description, prompt_path) VALUES (?, ?, ?, ?)",
-            (profile_id, name, description, str(prompt_1_7B_path))
-        )
-        conn.commit()
+    # 投递给后台 Worker
+    client_ip = request.client.host if hasattr(request, 'client') and request.client else "?"
+    task = {
+        "task_id": task_id,
+        "type": "extract_profile",
+        "name": "音色提取",
+        "ip": client_ip,
+        "profile_id": profile_id,
+        "name_field": name,
+        "description": description,
+        "reference_text": reference_text
+    }
+    
+    # 确保状态存在并修改为 queued
+    if task_id not in job_statuses:
+         job_statuses[task_id] = {"status": "queued", "created_at": time.time(), "result": None, "error": None}
+    
+    await job_queue.put(task)
+    
+    # 因为此 API 原先是同步返回 ProfileResponse，为了少改前端代码，我们在这里阻塞等待后台完成这一个特殊的任务
+    while True:
+        status_info = job_statuses.get(task_id)
+        if not status_info or status_info["status"] in ["done", "error", "cancelled"]:
+            break
+        await asyncio.sleep(0.5)
         
-        c.execute("SELECT * FROM profiles WHERE id=?", (profile_id,))
-        row = c.fetchone()
-        conn.close()
+    if status_info["status"] == "error":
+        raise HTTPException(status_code=500, detail=status_info.get("error"))
+    if status_info["status"] == "cancelled":
+        raise HTTPException(status_code=499, detail="Task was cancelled")
         
-        # We no longer delete temp audio; it was renamed to source.wav
-        return dict(row)
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        gpu_queue.release(task_id)
+    return status_info["result"]
 
 @app.get("/api/profiles", response_model=list[ProfileResponse])
 async def list_profiles():
@@ -311,32 +630,43 @@ async def transcribe_audio_endpoint(
 ):
     if not task_id:
         task_id = str(uuid.uuid4())
-    gpu_queue.register_meta(task_id, "语音听写", request.client.host if hasattr(request, 'client') and request.client else "?")
-    await gpu_queue.acquire(task_id)
-    try:
-        temp_dir = Path("data/temp")
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        temp_file = temp_dir / f"transcribe_{uuid.uuid4()}.wav"
+        job_statuses[task_id] = {"status": "queued", "created_at": time.time(), "result": None, "error": None}
         
-        with open(temp_file, "wb") as buffer:
-            shutil.copyfileobj(audio.file, buffer)
-            
-        # Run transcription
-        def _do_transcribe():
-            return transcribe_engine.transcribe(str(temp_file), language)
-            
-        transcription = await asyncio.to_thread(_do_transcribe)
+    temp_dir = Path("data/temp")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    temp_file = temp_dir / f"transcribe_{uuid.uuid4()}.wav"
+    
+    with open(temp_file, "wb") as buffer:
+        shutil.copyfileobj(audio.file, buffer)
         
-        # Cleanup
-        if temp_file.exists():
-            temp_file.unlink()
-            
-        return {"text": transcription}
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        gpu_queue.release(task_id)
+    client_ip = request.client.host if hasattr(request, 'client') and request.client else "?"
+    task = {
+        "task_id": task_id,
+        "type": "transcribe",
+        "name": "语音听写",
+        "ip": client_ip,
+        "temp_file": str(temp_file),
+        "language": language
+    }
+    
+    if task_id not in job_statuses:
+         job_statuses[task_id] = {"status": "queued", "created_at": time.time(), "result": None, "error": None}
+         
+    await job_queue.put(task)
+    
+    # 阻塞等待结果
+    while True:
+        status_info = job_statuses.get(task_id)
+        if not status_info or status_info["status"] in ["done", "error", "cancelled"]:
+            break
+        await asyncio.sleep(0.5)
+        
+    if status_info["status"] == "error":
+        raise HTTPException(status_code=500, detail=status_info.get("error"))
+    if status_info["status"] == "cancelled":
+        raise HTTPException(status_code=499, detail="Task was cancelled")
+        
+    return status_info["result"]
 
 @app.post("/api/generate", response_model=HistoryResponse)
 async def generate_audio(
@@ -350,69 +680,39 @@ async def generate_audio(
 ):
     if not task_id:
         task_id = str(uuid.uuid4())
-    gpu_queue.register_meta(task_id, "普通合成", request.client.host if hasattr(request, 'client') and request.client else "?")
-    await gpu_queue.acquire(task_id)
-    try:
-        # Get profile
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("SELECT * FROM profiles WHERE id=?", (profile_id,))
-        profile_row = c.fetchone()
+        job_statuses[task_id] = {"status": "queued", "created_at": time.time(), "result": None, "error": None}
         
-        if not profile_row:
-            conn.close()
-            raise HTTPException(status_code=404, detail="Profile not found")
-            
-        profile_folder = PROFILES_DIR / profile_id
-        prompt_file = profile_folder / f"prompt_{model_size}.pt"
+    client_ip = request.client.host if hasattr(request, 'client') and request.client else "?"
+    task = {
+        "task_id": task_id,
+        "type": "generate",
+        "name": "普通合成",
+        "ip": client_ip,
+        "profile_id": profile_id,
+        "text": text,
+        "language": language,
+        "model_size": model_size,
+        "instruct": instruct
+    }
+    
+    if task_id not in job_statuses:
+         job_statuses[task_id] = {"status": "queued", "created_at": time.time(), "result": None, "error": None}
+         
+    await job_queue.put(task)
+    
+    # 阻塞等待结果
+    while True:
+        status_info = job_statuses.get(task_id)
+        if not status_info or status_info["status"] in ["done", "error", "cancelled"]:
+            break
+        await asyncio.sleep(0.5)
         
-        if not prompt_file.exists():
-            # If prompt for this model doesn't exist, try dynamically creating it from source
-            source_audio = profile_folder / "source.wav"
-            ref_txt_file = profile_folder / "reference.txt"
-            
-            if not source_audio.exists() or not ref_txt_file.exists():
-                raise HTTPException(status_code=400, detail=f"该音色是旧版迁移过来的，缺失原音频无法直接为您动态生成 {model_size} 的音色向量张量。请使用 1.7B 或者重新录制此音色。")
-                
-            with open(ref_txt_file, "r", encoding="utf-8") as f:
-                ref_text = f.read()
-                
-            prompt = await engine.create_prompt(str(source_audio), ref_text, model_size=model_size)
-            torch.save(prompt, prompt_file)
-        else:
-            prompt = torch.load(prompt_file, weights_only=False)
+    if status_info["status"] == "error":
+        raise HTTPException(status_code=500, detail=status_info.get("error"))
+    if status_info["status"] == "cancelled":
+        raise HTTPException(status_code=499, detail="Task was cancelled")
         
-        start_time = time.time()
-        audio_array, sr = await engine.generate_speech(
-            text=text, 
-            voice_prompt=prompt, 
-            language=language, 
-            instruct=instruct,
-            model_size=model_size
-        )
-        dur = len(audio_array) / sr
-        
-        gen_id = str(uuid.uuid4())
-        audio_file = HISTORY_DIR / f"{gen_id}.wav"
-        sf.write(str(audio_file), audio_array, sr)
-        
-        c.execute(
-            "INSERT INTO history (id, profile_id, text, language, instruct, audio_path, duration) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (gen_id, profile_id, text, language, instruct, str(audio_file), dur)
-        )
-        conn.commit()
-        
-        c.execute("SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name FROM history h LEFT JOIN profiles p ON h.profile_id = p.id WHERE h.id=?", (gen_id,))
-        history_row = c.fetchone()
-        conn.close()
-        
-        return dict(history_row)
-        
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        gpu_queue.release(task_id)
+    return status_info["result"]
 
 def split_text_to_chunks(text: str) -> list:
     """Split text into sentence-level chunks for streaming generation."""
@@ -445,114 +745,99 @@ async def generate_audio_stream(
 ):
     if not task_id:
         task_id = str(uuid.uuid4())
-    # Register metadata for logging
+        job_statuses[task_id] = {"status": "queued", "created_at": time.time(), "result": None, "error": None}
+        
     client_ip = request.client.host if hasattr(request, 'client') and request.client else "?"
-    gpu_queue.register_meta(task_id, "流式合成", client_ip)
-    # Register the task in the wait queue (supports pre-registered tickets)
-    if task_id not in gpu_queue.queue:
-        gpu_queue.queue.append(task_id)
+    
+    # 建立独立缓冲队列并发布任务
+    stream_buffers[task_id] = asyncio.Queue()
+    
+    task = {
+        "task_id": task_id,
+        "type": "generate_stream",
+        "name": "流式合成",
+        "ip": client_ip,
+        "profile_id": profile_id,
+        "text": text,
+        "language": language,
+        "model_size": model_size,
+        "instruct": instruct
+    }
+    
+    if task_id not in job_statuses:
+         job_statuses[task_id] = {"status": "queued", "created_at": time.time(), "result": None, "error": None}
+         
+    await job_queue.put(task)
 
     async def event_generator():
         try:
             # Emit queue events while waiting
             while True:
-                pos = gpu_queue.get_position(task_id)
-                yield f"data: {json.dumps({'type': 'queue', 'position': pos})}\n\n"
-                if gpu_queue.queue[0] == task_id and not gpu_queue.active:
+                status_info = job_statuses.get(task_id)
+                if not status_info:
                     break
-                await asyncio.sleep(1.0)
+                    
+                status = status_info["status"]
                 
-            # Now we are at the front, acquire GPU lock
-            gpu_queue.active = True
-            
-            # Now execution continues matching before
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("SELECT * FROM profiles WHERE id=?", (profile_id,))
-            profile_row = c.fetchone()
-            
-            if not profile_row:
-                conn.close()
-                yield f"data: {json.dumps({'type': 'error', 'message': 'Profile not found'})}\n\n"
+                # 如果被取消了 (比如前端放弃或者网络中断)，提前结束 (这里 HTTP 其实断了也会结束)
+                if status == "cancelled":
+                    break
+                    
+                # 轮询自身的位置，向前端发 queue 状态
+                if status == "queued":
+                    position = -1
+                    valid_count = 0
+                    for t in job_queue._queue:
+                        tid = t.get("task_id")
+                        t_status = job_statuses.get(tid, {})
+                        if t_status.get("status") != "cancelled":
+                            valid_count += 1
+                            if tid == task_id:
+                                position = valid_count
+                                break
+                                
+                    if position == -1:
+                        position = valid_count + 1
+                        
+                    yield f"data: {json.dumps({'type': 'queue', 'position': position})}\n\n"
+                    await asyncio.sleep(1.0)
+                    continue
+                    
+                if status in ["processing", "done", "error"]:
+                    # 后端工作线程已开始拉取任务，可以跳出轮询了
+                    yield f"data: {json.dumps({'type': 'queue', 'position': 0})}\n\n"
+                    break
+                    
+            # 等待 Worker 写缓冲数据
+            q = stream_buffers.get(task_id)
+            if not q:
                 return
                 
-            profile_folder = PROFILES_DIR / profile_id
-            prompt_file = profile_folder / f"prompt_{model_size}.pt"
-            
-            if not prompt_file.exists():
-                source_audio = profile_folder / "source.wav"
-                ref_txt_file = profile_folder / "reference.txt"
-                if not source_audio.exists() or not ref_txt_file.exists():
-                    yield f"data: {json.dumps({'type': 'error', 'message': 'Missing source audio for this profile'})}\n\n"
-                    return
-                with open(ref_txt_file, "r", encoding="utf-8") as f:
-                    ref_text = f.read()
-                prompt = await engine.create_prompt(str(source_audio), ref_text, model_size=model_size)
-                torch.save(prompt, prompt_file)
-            else:
-                prompt = torch.load(prompt_file, weights_only=False)
-            
-            chunks = split_text_to_chunks(text)
-            total_chunks = len(chunks)
-            all_audio_arrays = []
-            sample_rate = 24000
-            
-            yield f"data: {json.dumps({'type': 'info', 'total_chunks': total_chunks})}\n\n"
-            
-            for idx, chunk_text in enumerate(chunks):
-                try:
-                    audio_array, sr = await engine.generate_speech(
-                        text=chunk_text,
-                        voice_prompt=prompt,
-                        language=language,
-                        instruct=instruct,
-                        model_size=model_size
-                    )
-                    sample_rate = sr
-                    all_audio_arrays.append(audio_array)
+            while True:
+                msg = await q.get()
+                if msg is None:  # EOF marking
+                    break
+                yield f"data: {json.dumps(msg)}\n\n"
+                
+                if msg.get("type") in ["done", "error"]:
+                    break
                     
-                    # Encode audio chunk as base64 wav
-                    buf = io.BytesIO()
-                    sf.write(buf, audio_array, sr, format='WAV')
-                    buf.seek(0)
-                    audio_b64 = base64.b64encode(buf.read()).decode('utf-8')
-                    
-                    yield f"data: {json.dumps({'type': 'chunk', 'index': idx, 'total': total_chunks, 'audio_b64': audio_b64, 'text': chunk_text})}\n\n"
-                except Exception as chunk_err:
-                    traceback.print_exc()
-                    yield f"data: {json.dumps({'type': 'chunk_error', 'index': idx, 'message': str(chunk_err)})}\n\n"
-            
-            # Save complete audio to history
-            if all_audio_arrays:
-                full_audio = np.concatenate(all_audio_arrays)
-                dur = len(full_audio) / sample_rate
-                gen_id = str(uuid.uuid4())
-                audio_file = HISTORY_DIR / f"{gen_id}.wav"
-                sf.write(str(audio_file), full_audio, sample_rate)
-                
-                c.execute(
-                    "INSERT INTO history (id, profile_id, text, language, instruct, audio_path, duration) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (gen_id, profile_id, text, language, instruct, str(audio_file), dur)
-                )
-                conn.commit()
-                conn.close()
-                
-                yield f"data: {json.dumps({'type': 'done', 'history_id': gen_id, 'duration': dur})}\n\n"
-            else:
-                conn.close()
-                yield f"data: {json.dumps({'type': 'error', 'message': 'No audio generated'})}\n\n"
-                
-        except Exception as e:
-            traceback.print_exc()
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        except asyncio.CancelledError:
+            # FastAPI 监测到 HTTP 断开
+            print(f"⚠️ [API] 前端连接断开 (任务ID: {task_id[:8]})")
         finally:
-            gpu_queue.release(task_id)
+            # 清理缓冲队列，工作线程看到它没了就不会再算后续的分句了
+            if task_id in stream_buffers:
+                del stream_buffers[task_id]
+            # 如果还没开始就被抛弃，则通知工作线程跳过
+            if task_id in job_statuses and job_statuses[task_id]["status"] == "queued":
+                job_statuses[task_id]["status"] = "cancelled"
     
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 @app.get("/api/queue_status")
 async def queue_status():
-    return {"tasks_in_queue": len(gpu_queue.queue), "is_active": gpu_queue.active}
+    return {"tasks_in_queue": job_queue.qsize(), "is_active": len([k for k,v in job_statuses.items() if v.get("status") == "processing"]) > 0}
 
 @app.get("/api/history", response_model=list[HistoryResponse])
 async def list_history():

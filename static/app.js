@@ -27,12 +27,20 @@ function showLoader(text) {
     // Clear any leftover queue info
     let qInfo = document.getElementById('loaderQueueInfo');
     if (qInfo) qInfo.innerText = '';
+
+    // Hide cancel button for generic tasks
+    const btnCancel = document.getElementById('btnCancelQueue');
+    if (btnCancel) btnCancel.style.display = 'none';
 }
 
 // GPU loader: register a personal queue ticket, then poll YOUR exact position
 async function showGpuLoader(text) {
     document.getElementById('loaderText').innerText = text || "正在处理...";
     document.getElementById('loader').style.display = 'flex';
+
+    // Show cancel button for GPU tasks
+    const btnCancel = document.getElementById('btnCancelQueue');
+    if (btnCancel) btnCancel.style.display = 'inline-block';
 
     // Create or get the queue info element
     let qInfo = document.getElementById('loaderQueueInfo');
@@ -65,30 +73,50 @@ async function pollMyPosition() {
     try {
         const res = await fetch(`${API_BASE}/queue_position/${currentTaskId}`);
         const data = await res.json();
-        const pos = data.position;   // 0-based index: 0 = first in line
-        const total = data.total;
+        const pos = data.position;   // 0-based index or total size, -1 means done/error/unknown
+        const status = data.status;
 
-        if (pos === -1) {
+        if (status === 'done' || status === 'error' || pos === -1) {
             // Our task was already processed and removed
-            qInfo.innerText = "✅ 任务已被处理！";
+            qInfo.innerText = status === 'error' ? "❌ 任务执行失败！" : "✅ 任务已被提取处理！";
             qInfo.className = 'text-emerald-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-emerald-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.3)]';
-        } else if (pos === 0) {
+        } else if (status === 'processing' || pos === 0) {
             qInfo.innerText = `🚀 GPU 正在为您全力运算中...`;
             qInfo.className = 'text-emerald-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-emerald-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.3)]';
         } else {
-            qInfo.innerText = `⏳ 排队中... 您当前排在第 ${pos + 1} 位（前方还有 ${pos} 个任务）`;
+            qInfo.innerText = `⏳ 排队中... 您当前大约排在第 ${pos} 位`;
             qInfo.className = 'text-yellow-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-yellow-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(250,204,21,0.3)]';
         }
     } catch (e) { }
 }
 
-function hideLoader() {
+function hideLoader(cancelTask = true) {
     if (queuePollInterval) {
         clearInterval(queuePollInterval);
         queuePollInterval = null;
     }
+    // Only attempt to cancel if cancelTask is true (so it doesn't kill active SSE/Waiters)
+    if (cancelTask && currentTaskId) {
+        fetch(`${API_BASE}/queue_cancel/${currentTaskId}`, { method: 'DELETE' }).catch(() => { });
+    }
     currentTaskId = null;
     document.getElementById('loader').style.display = 'none';
+}
+
+function cancelCurrentTask() {
+    if (!confirm('确定要取消当前排队并放弃生成吗？')) return;
+    hideLoader(true);
+    // 恢复所有按钮可用状态
+    const btnGen = document.getElementById('btnGenerate');
+    const btnStream = document.getElementById('btnStreamGenerate');
+    if (btnGen) btnGen.disabled = false;
+    if (btnStream) btnStream.disabled = false;
+
+    // 如果是流式合成期间被取消，把流式播放器复位
+    const streamPlayerBox = document.getElementById('streamPlayerBox');
+    if (streamPlayerBox) streamPlayerBox.classList.add('hidden');
+
+    toast("任务已成功取消。");
 }
 
 function toast(msg) {
@@ -118,9 +146,6 @@ async function loadProfiles() {
                     </div>
                     
                     <div class="flex items-center space-x-2">
-                        <button id="play-btn-${p.id}" onclick="toggleProfileAudio('${p.id}')" class="p-1.5" title="试听/停止原声">
-                            <svg class="w-4 h-4 text-gray-400 group-hover:text-brand transition-colors" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg>
-                        </button>
                         <button onclick="deleteProfile('${p.id}')" class="text-gray-500 hover:text-rose-500 p-1.5 transition-colors" title="删除">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                         </button>
@@ -135,66 +160,11 @@ async function loadProfiles() {
 
     } catch (e) {
         console.error(e);
-        profileList.innerHTML = '<div class="text-rose-400 text-sm text-center">加载失败</div>';
+        profileList.innerHTML = '<div class="text-rose-400 text-sm py-4 text-center">加载失败</div>';
     }
 }
 
-// ---------------- Profile Audio Playback ----------------
-let currentPlayingProfileAudio = null;
-let currentPlayingProfileId = null;
-
-function toggleProfileAudio(profileId) {
-    if (currentPlayingProfileAudio && currentPlayingProfileId === profileId) {
-        // Stop current
-        currentPlayingProfileAudio.pause();
-        currentPlayingProfileAudio.currentTime = 0;
-        currentPlayingProfileAudio = null;
-        currentPlayingProfileId = null;
-        updateProfilePlayButton(profileId, false);
-        return;
-    }
-
-    // Stop any existing
-    if (currentPlayingProfileAudio) {
-        currentPlayingProfileAudio.pause();
-        currentPlayingProfileAudio.currentTime = 0;
-        const oldId = currentPlayingProfileId;
-        currentPlayingProfileAudio = null;
-        currentPlayingProfileId = null;
-        if (oldId) updateProfilePlayButton(oldId, false);
-    }
-
-    // Play new
-    const audio = new Audio(`${API_BASE}/../audio/profiles/${profileId}`);
-    audio.play().catch(e => {
-        alert('无法播放该音色的原声。可能是旧版本直接迁移导致母带音频已丢失。');
-        updateProfilePlayButton(profileId, false);
-    });
-
-    currentPlayingProfileAudio = audio;
-    currentPlayingProfileId = profileId;
-    updateProfilePlayButton(profileId, true);
-
-    audio.onended = () => {
-        if (currentPlayingProfileId === profileId) {
-            currentPlayingProfileAudio = null;
-            currentPlayingProfileId = null;
-            updateProfilePlayButton(profileId, false);
-        }
-    };
-}
-
-function updateProfilePlayButton(profileId, isPlaying) {
-    const btn = document.getElementById(`play-btn-${profileId}`);
-    if (!btn) return;
-    if (isPlaying) {
-        // Stop icon
-        btn.innerHTML = `<svg class="w-4 h-4 text-brand" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"></path></svg>`;
-    } else {
-        // Play icon
-        btn.innerHTML = `<svg class="w-4 h-4 text-gray-400 group-hover:text-brand transition-colors" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg>`;
-    }
-}
+// (Original Audio functions removed to protect privacy, preserving simple history removal logic)
 
 async function deleteProfile(id) {
     if (!confirm('确定删除此音色特征吗？')) return;
@@ -537,7 +507,7 @@ async function generateTTS() {
         console.error(e);
         alert('生成失败: ' + e.message);
     } finally {
-        hideLoader();
+        hideLoader(false);
         document.getElementById('btnGenerate').disabled = false;
     }
 }
@@ -579,8 +549,9 @@ const streamQueue = {
         }
     },
 
-    markStreamDone() {
+    markStreamDone(doneText) {
         this.streamDone = true;
+        this.finalDoneText = doneText || '✅ 播放与生成全部完成！';
     },
 
     _playNext() {
@@ -591,6 +562,12 @@ const streamQueue = {
             if (!this.streamDone) {
                 // More chunks may arrive, poll
                 this._pollForNext();
+            } else {
+                // Stream is done AND all chunks have finished playing
+                if (this.statusText && this.finalDoneText) {
+                    this.statusDot.className = 'w-2 h-2 rounded-full bg-blue-400 mr-2';
+                    this.statusText.textContent = this.finalDoneText;
+                }
             }
             return;
         }
@@ -682,14 +659,20 @@ async function generateTTSStream() {
 
         if (!res.ok) throw new Error(await res.text());
 
-        // Connection established! Hide loader, show stream player
-        hideLoader();
-        playerBox.classList.remove('hidden');
-        statusDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-2';
-        statusText.textContent = '流式连接已建立，等待数据...';
-        chunkInfo.textContent = '';
-        audioPlayer.src = '';
-        streamQueue.reset(audioPlayer, statusText, statusDot, chunkInfo);
+        // Prepare reveal function for when queue finishes
+        let playerBoxRevealed = false;
+        const revealPlayerBox = () => {
+            if (!playerBoxRevealed) {
+                playerBoxRevealed = true;
+                hideLoader(false);
+                playerBox.classList.remove('hidden');
+                statusDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-2';
+                statusText.textContent = '流式连接已建立，马上开始...';
+                chunkInfo.textContent = '';
+                audioPlayer.src = '';
+                streamQueue.reset(audioPlayer, statusText, statusDot, chunkInfo);
+            }
+        };
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -713,21 +696,23 @@ async function generateTTSStream() {
 
                 if (event.type === 'queue') {
                     const pos = event.position;
-                    statusDot.className = 'w-2 h-2 rounded-full bg-yellow-400 animate-pulse mr-2';
+                    // pos > 0 details are updated in the UI by pollMyPosition() safely behind the scenes
                     if (pos === 0) {
-                        statusText.textContent = `服务器挤爆啦！您当前排在第一位，马上为您生成...`;
-                    } else {
-                        statusText.textContent = `服务器挤爆啦！排队中... 前方还有 ${pos} 个任务`;
+                        revealPlayerBox();
+                        statusDot.className = 'w-2 h-2 rounded-full bg-yellow-400 animate-pulse mr-2';
+                        statusText.textContent = `服务器响应已送达！正在解码推流...`;
                     }
                 }
 
                 else if (event.type === 'info') {
+                    revealPlayerBox();
                     streamQueue.totalChunks = event.total_chunks;
                     statusDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-2';
                     statusText.textContent = `起算！流式生成中 (共 ${event.total_chunks} 个语句段落)...`;
                 }
 
                 else if (event.type === 'chunk') {
+                    revealPlayerBox();
                     chunkInfo.textContent = `${event.index + 1}/${event.total} 段已生成`;
 
                     // Convert base64 to blob URL
@@ -744,25 +729,34 @@ async function generateTTSStream() {
                 }
 
                 else if (event.type === 'done') {
-                    streamQueue.markStreamDone();
+                    const msg = `✅ 全部生成完成！总时长 ${event.duration.toFixed(1)}s`;
+                    streamQueue.markStreamDone(msg);
                     chunkInfo.textContent = `全部 ${streamQueue.totalChunks} 段已生成`;
-                    statusText.textContent = `✅ 全部生成完成！总时长 ${event.duration.toFixed(1)}s`;
-                    statusDot.className = 'w-2 h-2 rounded-full bg-blue-400 mr-2';
+                    if (!streamQueue.isPlaying) {
+                        statusText.textContent = msg;
+                        statusDot.className = 'w-2 h-2 rounded-full bg-blue-400 mr-2';
+                    }
                     await loadHistory();
                 }
 
                 else if (event.type === 'error') {
-                    streamQueue.markStreamDone();
-                    statusText.textContent = `❌ 错误: ${event.message}`;
-                    statusDot.className = 'w-2 h-2 rounded-full bg-rose-400 mr-2';
+                    const msg = `❌ 错误: ${event.message}`;
+                    streamQueue.markStreamDone(msg);
+                    if (!streamQueue.isPlaying) {
+                        statusText.textContent = msg;
+                        statusDot.className = 'w-2 h-2 rounded-full bg-rose-400 mr-2';
+                    }
                 }
             }
         }
     } catch (e) {
         console.error(e);
-        streamQueue.markStreamDone();
-        statusText.textContent = `❌ 流式生成失败: ${e.message}`;
-        statusDot.className = 'w-2 h-2 rounded-full bg-rose-400 mr-2';
+        const msg = `❌ 流式生成失败: ${e.message}`;
+        streamQueue.markStreamDone(msg);
+        if (!streamQueue.isPlaying) {
+            statusText.textContent = msg;
+            statusDot.className = 'w-2 h-2 rounded-full bg-rose-400 mr-2';
+        }
     } finally {
         document.getElementById('btnGenerate').disabled = false;
         document.getElementById('btnStreamGenerate').disabled = false;
