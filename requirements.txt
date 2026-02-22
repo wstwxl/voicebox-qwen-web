@@ -17,7 +17,8 @@ fastapi==0.129.0
 ffmpy==1.0.0
 filelock==3.20.0
 flatbuffers==25.12.19
-flash-attn==2.8.3
+# flash-attn 由 setup.sh 单独安装预编译包，此处仅作记录
+# flash-attn>=2.6.3
 fsspec==2025.12.0
 gradio==6.6.0
 gradio_client==2.1.0
