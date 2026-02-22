@@ -22,26 +22,88 @@ import re
 import base64
 import json
 import numpy as np
+import logging
+from datetime import datetime
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
 
-# Global Queue for GPU Tasks to prevent OOM on concurrent access
+# ============ 静默 uvicorn 默认刷屏日志 ============
+logging.getLogger("uvicorn.access").disabled = True
+
+# ============ 在线设备追踪器 ============
+class DeviceTracker:
+    TIMEOUT = 300  # 5分钟无活动判定离线
+    
+    def __init__(self):
+        self.devices = {}  # {ip: last_active_time}
+    
+    def heartbeat(self, ip: str):
+        now = time.time()
+        is_new = ip not in self.devices or (now - self.devices.get(ip, 0) > self.TIMEOUT)
+        self.devices[ip] = now
+        if is_new:
+            self._cleanup()
+            print(f"\n📱 [设备上线] {ip} | 当前在线设备: {len(self.devices)} 台")
+    
+    def _cleanup(self):
+        now = time.time()
+        expired = [ip for ip, t in self.devices.items() if now - t > self.TIMEOUT]
+        for ip in expired:
+            del self.devices[ip]
+            print(f"📴 [设备离线] {ip} 超过5分钟无活动 | 当前在线设备: {len(self.devices)} 台")
+    
+    def get_online_count(self):
+        self._cleanup()
+        return len(self.devices)
+
+device_tracker = DeviceTracker()
+
+# ============ GPU 显存报告 ============
+def gpu_memory_report():
+    if torch.cuda.is_available():
+        used = torch.cuda.memory_allocated() / 1024**3
+        total = torch.cuda.get_device_properties(0).total_mem / 1024**3
+        pct = used / total * 100 if total > 0 else 0
+        return f"📊 显存: {used:.1f}/{total:.1f} GB ({pct:.0f}%)"
+    return "📊 显存: N/A (无CUDA)"
+
+# ============ GPU 任务队列管理器 ============
 class GPUQueue:
     def __init__(self):
         self.queue = []
         self.active = False
+        self._task_meta = {}  # {task_id: {name, ip, start_time}}
+        
+    def register_meta(self, task_id: str, task_name: str, ip: str):
+        self._task_meta[task_id] = {"name": task_name, "ip": ip, "start_time": None}
         
     async def acquire(self, task_id: str):
-        # Support pre-registered task_ids (already in queue from /api/queue_register)
         if task_id not in self.queue:
             self.queue.append(task_id)
-        # Wait until we are first in line and GPU is not active
+        meta = self._task_meta.get(task_id, {"name": "未知任务", "ip": "?"})
+        pos = self.get_position(task_id)
+        total = len(self.queue)
+        if pos > 0:
+            print(f"⏳ [任务排队] {meta.get('name')} | 来自 {meta.get('ip')} | 排在第 {pos+1} 位（前方 {pos} 个任务）")
         while self.queue[0] != task_id or self.active:
             await asyncio.sleep(0.5)
         self.active = True
+        meta["start_time"] = time.time()
+        print(f"🔥 [任务开始] {meta.get('name')} | 来自 {meta.get('ip')} | 队列: {len(self.queue)} 个任务")
         
     def release(self, task_id: str):
+        meta = self._task_meta.pop(task_id, {"name": "未知任务", "ip": "?"})
+        elapsed = time.time() - meta["start_time"] if meta.get("start_time") else 0
         self.active = False
         if task_id in self.queue:
             self.queue.remove(task_id)
+        remaining = len(self.queue)
+        mem = gpu_memory_report()
+        print(f"✅ [任务完成] {meta.get('name')} | 来自 {meta.get('ip')} | 耗时 {elapsed:.1f}秒 | {mem}")
+        if remaining == 0:
+            print(f"💤 [服务器空闲] 当前无任务运行、无任务排队 | 在线设备: {device_tracker.get_online_count()} 台")
+        else:
+            print(f"   └─ 队列中还有 {remaining} 个任务等待处理")
             
     def get_position(self, task_id: str):
         try:
@@ -70,13 +132,80 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ============ 设备追踪中间件 ============
+class DeviceTrackingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        ip = request.client.host if request.client else "unknown"
+        device_tracker.heartbeat(ip)
+        response = await call_next(request)
+        return response
+
+app.add_middleware(DeviceTrackingMiddleware)
+
 
 @app.on_event("startup")
 async def startup_event():
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
-    print("Voicebox Local Server Started on port 8888")
+    
+    # 统计已有数据
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM profiles")
+    profile_count = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM history")
+    history_count = c.fetchone()[0]
+    
+    # ============ 启动清理 ============
+    # 1. 清理 data/temp/ 目录（全是临时文件，没有保留价值）
+    temp_dir = DATA_DIR / "temp"
+    temp_cleaned = 0
+    temp_freed_bytes = 0
+    if temp_dir.exists():
+        for f in temp_dir.iterdir():
+            if f.is_file():
+                temp_freed_bytes += f.stat().st_size
+                f.unlink()
+                temp_cleaned += 1
+    
+    # 2. 清理 data/profiles/ 中的孤儿文件夹（数据库里没有注册的）
+    c.execute("SELECT id FROM profiles")
+    registered_ids = {row[0] for row in c.fetchall()}
+    conn.close()
+    
+    orphan_cleaned = 0
+    orphan_freed_bytes = 0
+    if PROFILES_DIR.exists():
+        for folder in PROFILES_DIR.iterdir():
+            if folder.is_dir() and folder.name not in registered_ids:
+                # 计算文件夹大小
+                for f in folder.rglob("*"):
+                    if f.is_file():
+                        orphan_freed_bytes += f.stat().st_size
+                shutil.rmtree(folder)
+                orphan_cleaned += 1
+    
+    # 3. history/ 下的文件全部保留，不做任何处理
+    
+    # GPU 信息
+    gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "无CUDA"
+    gpu_mem = f"{torch.cuda.get_device_properties(0).total_mem / 1024**3:.0f}GB" if torch.cuda.is_available() else "N/A"
+    
+    total_freed_mb = (temp_freed_bytes + orphan_freed_bytes) / 1024 / 1024
+    
+    print("\n" + "=" * 55)
+    print("    🎙️  Voicebox Qwen Web UI (云端多用户版)")
+    print(f"    📡 监听端口: 6006")
+    print(f"    🎮 GPU: {gpu_name} | 显存: {gpu_mem}")
+    print(f"    📦 已有音色: {profile_count} 个 | 历史记录: {history_count} 条")
+    print(f"    ⏰ 启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if temp_cleaned > 0 or orphan_cleaned > 0:
+        print(f"    🧹 启动清理: 删除 {temp_cleaned} 个临时文件 + {orphan_cleaned} 个孤儿音色 | 释放 {total_freed_mb:.1f} MB")
+    else:
+        print(f"    🧹 启动清理: 磁盘很干净，无需清理 ✨")
+    print("=" * 55)
+    print("    等待用户连接中...\n")
 
 
 @app.post("/api/queue_register")
@@ -95,6 +224,7 @@ async def queue_position(task_id: str):
 
 @app.post("/api/profiles", response_model=ProfileResponse)
 async def create_profile(
+    request: Request,
     audio: UploadFile = File(...),
     name: str = Form(...),
     description: str = Form(""),
@@ -103,6 +233,7 @@ async def create_profile(
 ):
     if not task_id:
         task_id = str(uuid.uuid4())
+    gpu_queue.register_meta(task_id, "音色提取", request.client.host if hasattr(request, 'client') and request.client else "?")
     await gpu_queue.acquire(task_id)
     try:
         profile_id = str(uuid.uuid4())
@@ -173,12 +304,14 @@ async def delete_profile(profile_id: str):
 
 @app.post("/api/transcribe")
 async def transcribe_audio_endpoint(
+    request: Request,
     audio: UploadFile = File(...),
     language: str = Form("auto"),
     task_id: str = Form(None)
 ):
     if not task_id:
         task_id = str(uuid.uuid4())
+    gpu_queue.register_meta(task_id, "语音听写", request.client.host if hasattr(request, 'client') and request.client else "?")
     await gpu_queue.acquire(task_id)
     try:
         temp_dir = Path("data/temp")
@@ -207,6 +340,7 @@ async def transcribe_audio_endpoint(
 
 @app.post("/api/generate", response_model=HistoryResponse)
 async def generate_audio(
+    request: Request,
     profile_id: str = Form(...),
     text: str = Form(...),
     language: str = Form("auto"),
@@ -216,6 +350,7 @@ async def generate_audio(
 ):
     if not task_id:
         task_id = str(uuid.uuid4())
+    gpu_queue.register_meta(task_id, "普通合成", request.client.host if hasattr(request, 'client') and request.client else "?")
     await gpu_queue.acquire(task_id)
     try:
         # Get profile
@@ -300,6 +435,7 @@ def split_text_to_chunks(text: str) -> list:
 
 @app.post("/api/generate_stream")
 async def generate_audio_stream(
+    request: Request,
     profile_id: str = Form(...),
     text: str = Form(...),
     language: str = Form("auto"),
@@ -309,6 +445,9 @@ async def generate_audio_stream(
 ):
     if not task_id:
         task_id = str(uuid.uuid4())
+    # Register metadata for logging
+    client_ip = request.client.host if hasattr(request, 'client') and request.client else "?"
+    gpu_queue.register_meta(task_id, "流式合成", client_ip)
     # Register the task in the wait queue (supports pre-registered tickets)
     if task_id not in gpu_queue.queue:
         gpu_queue.queue.append(task_id)
