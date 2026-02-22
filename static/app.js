@@ -17,11 +17,77 @@ window.onload = () => {
 }
 
 // ---------------- UI Helpers ----------------
+let queuePollInterval = null;
+let currentTaskId = null;
+
+// Simple loader (no GPU queue) for non-GPU tasks like file conversion
 function showLoader(text) {
     document.getElementById('loaderText').innerText = text || "正在处理...";
     document.getElementById('loader').style.display = 'flex';
+    // Clear any leftover queue info
+    let qInfo = document.getElementById('loaderQueueInfo');
+    if (qInfo) qInfo.innerText = '';
 }
+
+// GPU loader: register a personal queue ticket, then poll YOUR exact position
+async function showGpuLoader(text) {
+    document.getElementById('loaderText').innerText = text || "正在处理...";
+    document.getElementById('loader').style.display = 'flex';
+
+    // Create or get the queue info element
+    let qInfo = document.getElementById('loaderQueueInfo');
+    if (!qInfo) {
+        qInfo = document.createElement('div');
+        qInfo.id = 'loaderQueueInfo';
+        qInfo.className = 'text-gray-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-gray-500/30 backdrop-blur-md animate-pulse';
+        document.getElementById('loader').appendChild(qInfo);
+    }
+    qInfo.innerText = "📡 正在向服务器领取排队号...";
+
+    // Register a personal queue ticket with the server
+    try {
+        const res = await fetch(`${API_BASE}/queue_register`, { method: 'POST' });
+        const data = await res.json();
+        currentTaskId = data.task_id;
+    } catch (e) {
+        currentTaskId = null;
+    }
+
+    // Start polling MY position
+    if (queuePollInterval) clearInterval(queuePollInterval);
+    pollMyPosition();
+    queuePollInterval = setInterval(pollMyPosition, 1500);
+}
+
+async function pollMyPosition() {
+    let qInfo = document.getElementById('loaderQueueInfo');
+    if (!qInfo || !currentTaskId) return;
+    try {
+        const res = await fetch(`${API_BASE}/queue_position/${currentTaskId}`);
+        const data = await res.json();
+        const pos = data.position;   // 0-based index: 0 = first in line
+        const total = data.total;
+
+        if (pos === -1) {
+            // Our task was already processed and removed
+            qInfo.innerText = "✅ 任务已被处理！";
+            qInfo.className = 'text-emerald-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-emerald-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.3)]';
+        } else if (pos === 0) {
+            qInfo.innerText = `🚀 GPU 正在为您全力运算中...`;
+            qInfo.className = 'text-emerald-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-emerald-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.3)]';
+        } else {
+            qInfo.innerText = `⏳ 排队中... 您当前排在第 ${pos + 1} 位（前方还有 ${pos} 个任务）`;
+            qInfo.className = 'text-yellow-400 font-bold mt-4 text-sm bg-black/50 px-4 py-2 rounded-full border border-yellow-500/30 backdrop-blur-md animate-pulse shadow-[0_0_10px_rgba(250,204,21,0.3)]';
+        }
+    } catch (e) { }
+}
+
 function hideLoader() {
+    if (queuePollInterval) {
+        clearInterval(queuePollInterval);
+        queuePollInterval = null;
+    }
+    currentTaskId = null;
     document.getElementById('loader').style.display = 'none';
 }
 
@@ -55,7 +121,7 @@ async function loadProfiles() {
                         <button id="play-btn-${p.id}" onclick="toggleProfileAudio('${p.id}')" class="p-1.5" title="试听/停止原声">
                             <svg class="w-4 h-4 text-gray-400 group-hover:text-brand transition-colors" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg>
                         </button>
-                        <button onclick="deleteProfile('${p.id}')" class="text-gray-500 hover:text-rose-500 p-1.5 opacity-0 group-hover:opacity-100 transition-opacity" title="删除">
+                        <button onclick="deleteProfile('${p.id}')" class="text-gray-500 hover:text-rose-500 p-1.5 transition-colors" title="删除">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                         </button>
                     </div>
@@ -162,7 +228,8 @@ async function uploadAudioBlob(blob, filename) {
     formData.append('reference_text', input.text);
     formData.append('description', 'Local Studio UI created');
 
-    showLoader("正在发送给 GPU 分析提取声音特征 (1024/2048维张量) ...");
+    await showGpuLoader("正在发送给 GPU 分析提取声音特征 (1024/2048维张量) ...");
+    if (currentTaskId) formData.append('task_id', currentTaskId);
 
     try {
         const res = await fetch(`${API_BASE}/profiles`, {
@@ -454,7 +521,8 @@ async function generateTTS() {
         formData.append('instruct', document.getElementById('inpInstruct').value.trim());
     }
 
-    showLoader("RTX 4060 大模型推理中，加载 Qwen3-TTS 权重...");
+    await showGpuLoader("RTX 4090D 大模型推理中，加载 Qwen3-TTS 权重...");
+    if (currentTaskId) formData.append('task_id', currentTaskId);
     document.getElementById('btnGenerate').disabled = true;
 
     try {
@@ -591,24 +659,20 @@ async function generateTTSStream() {
         formData.append('instruct', document.getElementById('inpInstruct').value.trim());
     }
 
-    // Show stream player UI
+    // UI elements for the stream player
     const playerBox = document.getElementById('streamPlayerBox');
     const statusText = document.getElementById('streamStatusText');
     const statusDot = document.getElementById('streamStatusDot');
     const chunkInfo = document.getElementById('streamChunkInfo');
     const audioPlayer = document.getElementById('streamAudioPlayer');
 
-    playerBox.classList.remove('hidden');
-    statusDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-2';
-    statusText.textContent = '正在连接 GPU 推理引擎...';
-    chunkInfo.textContent = '';
-    audioPlayer.src = '';
+    // Hide stream player first, show full-screen GPU loader with personal queue ticket
+    playerBox.classList.add('hidden');
+    await showGpuLoader("正在等待 GPU 资源分配（流式合成）...");
+    if (currentTaskId) formData.append('task_id', currentTaskId);
 
     document.getElementById('btnGenerate').disabled = true;
     document.getElementById('btnStreamGenerate').disabled = true;
-
-    // Reset the global queue
-    streamQueue.reset(audioPlayer, statusText, statusDot, chunkInfo);
 
     try {
         const res = await fetch(`${API_BASE}/generate_stream`, {
@@ -617,6 +681,15 @@ async function generateTTSStream() {
         });
 
         if (!res.ok) throw new Error(await res.text());
+
+        // Connection established! Hide loader, show stream player
+        hideLoader();
+        playerBox.classList.remove('hidden');
+        statusDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-2';
+        statusText.textContent = '流式连接已建立，等待数据...';
+        chunkInfo.textContent = '';
+        audioPlayer.src = '';
+        streamQueue.reset(audioPlayer, statusText, statusDot, chunkInfo);
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -638,9 +711,20 @@ async function generateTTSStream() {
                 let event;
                 try { event = JSON.parse(jsonStr); } catch { continue; }
 
-                if (event.type === 'info') {
+                if (event.type === 'queue') {
+                    const pos = event.position;
+                    statusDot.className = 'w-2 h-2 rounded-full bg-yellow-400 animate-pulse mr-2';
+                    if (pos === 0) {
+                        statusText.textContent = `服务器挤爆啦！您当前排在第一位，马上为您生成...`;
+                    } else {
+                        statusText.textContent = `服务器挤爆啦！排队中... 前方还有 ${pos} 个任务`;
+                    }
+                }
+
+                else if (event.type === 'info') {
                     streamQueue.totalChunks = event.total_chunks;
-                    statusText.textContent = `流式生成中 (共 ${event.total_chunks} 个语句段落)...`;
+                    statusDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse mr-2';
+                    statusText.textContent = `起算！流式生成中 (共 ${event.total_chunks} 个语句段落)...`;
                 }
 
                 else if (event.type === 'chunk') {
@@ -716,11 +800,11 @@ async function loadHistory() {
                         <p class="text-sm text-gray-300 leading-relaxed mb-3">${h.text}</p>
                         
                         <!-- 底部控制栏 -->
-                        <div class="flex items-center justify-between bg-dark/50 rounded-lg p-2 border border-slate-700/50">
+                        <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between bg-dark/50 rounded-lg p-2 gap-2 border border-slate-700/50">
                             <!-- 浏览器原生暗黑播放器 -->
-                            <audio controls src="/audio/history/${h.id}" class="h-8 max-w-[200px] md:max-w-xs scale-90 origin-left brightness-90 contrast-125 sepia-0 hue-rotate-180 invert"></audio>
+                            <audio controls src="/audio/history/${h.id}" class="h-8 w-full sm:max-w-[200px] md:max-w-xs scale-90 origin-left sm:scale-100 brightness-90 contrast-125 sepia-0 hue-rotate-180 invert"></audio>
                             
-                            <div class="flex space-x-1">
+                            <div class="flex space-x-2 justify-end sm:justify-start">
                                 <button onclick="downloadSingle('${h.id}')" class="p-1.5 text-gray-400 hover:text-brand hover:bg-brand/10 rounded transition-colors" title="下载WAV">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                 </button>

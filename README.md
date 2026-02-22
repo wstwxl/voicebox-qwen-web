@@ -1,103 +1,116 @@
-# Voicebox Qwen Web UI
+# 🎙️ Voicebox Qwen Web UI — 个人主机版
 
-基于 **Qwen3-TTS** 模型以及 **Whisper-Base** 打造的纯本地、极速响应的前端语音克隆与零样本合成工作室。
-支持 FlashAttention-2 满血加速与流式输出（Streaming），体验极尽丝滑的秒级播报响应。
-
-## ✨ 特性 (Features)
-1. **开箱即用的 Web UI 面板**：基于原生的 HTML/JS 前端与 FastAPI 后端，跨平台支持，拒绝复杂的框架臃肿。
-2. **零延迟流式秒发播报**：借助流式传输（SSE）加上 `⚡ 流式合成` 的支持，让近百字长文的时间达到“首字即出”的即视感。
-3. **显存深层压榨与极致生成**：集成了底层 C++ 算子级 `FlashAttention-2` 的显存管理优化，有效把原来 12GB 的峰值显存门槛砸到极低。
-4. **极速音色提取及无感切换**：在创建新音色时（仅需 10 到 20 秒源音频），提取 1.7B 模型及 0.6B 特征只需瞬间，并在不同主存量级模型中进行 **0 延迟的热切换**验证！
-5. **记忆时空下载：** 所有生成过的作品，都有单独存放的 `data/history` 管理，右侧控制面板实时附带列表与回放。
+基于 **Qwen3-TTS** 大语言模型 + **Whisper-Base** 语音识别引擎打造的**零样本声音克隆与实时语音合成工作站**。
+本分支 (`ubuntu20.04`) 适配 **Ubuntu 20.04 个人主机**部署，支持多用户公网访问。
 
 ---
 
-## ☁️ AutoDL 云服务器一键部署指南 (强烈推荐)
-如果您为了告别本地显卡不足的困扰，并在 RTX 4090 或 3090 服务器上体验真正能投入生产的流式推理速度，本分支已为您预配置好了完美贴合 **AutoDL 镜像环境（PyTorch 2.5.x, Python 3.12, CUDA 12.4）** 的所有加速部署与防网络阻断功能！
+## ✨ 核心功能
 
-### 1. 将项目部署在数据盘 (`autodl-tmp`)
-在通过 JupyterLab 打开的终端（Terminal）内，**请务必将项目安装在高速且免费的 `/root/autodl-tmp/` 目录下**（不要下在系统盘 `/root/`！系统盘仅有几十 G 会塞爆）：
+| 功能 | 说明 |
+|------|------|
+| 🎤 **十秒音色克隆** | 仅需 10～20 秒人声录音，即可提取声纹特征张量 |
+| ⚡ **流式秒发播报** | SSE 流式合成，长文本"边生成边播放" |
+| 🧠 **双模型热切换** | 1.7B 满血模型（支持情感指令）+ 0.6B 极速模型 |
+| 📝 **语音听写** | 内置 Whisper 语音识别，对着麦克风说话自动转文本 |
+| 🔥 **FlashAttention-2** | C++ 算子级显存优化，大幅降低推理显存峰值 |
+| 📱 **移动端适配** | 响应式 UI，手机浏览器也能流畅操作 |
+| 🎫 **多用户排队系统** | 个人"排队票"机制，每个用户精确看到自己的排位 |
+| 📊 **服务器监控仪表盘** | 终端实时显示设备上下线、任务生命周期、显存占用 |
+| 🧹 **启动自动清理** | 自动清除临时文件和孤儿音色数据 |
+
+---
+
+## 🚀 部署指南（Ubuntu 20.04 + Miniconda）
+
+### 前置要求
+
+- Ubuntu 20.04 系统
+- NVIDIA GPU（推荐 RTX 3060 12GB 及以上）
+- 已安装 NVIDIA 驱动 + CUDA 12.x
+- 已安装 [Miniconda](https://docs.conda.io/en/latest/miniconda.html)
+- 可访问外网
+
+### 第一步：克隆项目
 
 ```bash
-cd /root/autodl-tmp/
-git clone -b ubuntu22.04 https://github.com/wstwxl/voicebox-qwen-web.git
+git clone -b ubuntu20.04 https://github.com/wstwxl/voicebox-qwen-web.git
 cd voicebox-qwen-web
 ```
 
-### 2. 执行自动化环境点火脚本
-AutoDL 服务器因为安全隔离，很容易无法直连海外 GitHub 源码或是慢如蜗牛，且编译底层 C++ 算子插件（FlashAttention）更是费时费钱！
-因此，在 `new_project` 的根目录下，我们打造了一个绕开所有暗坑的**一步登天部署脚本 `start_autodl.sh`**。
-
-它里面为您执行了以下黑魔法：
-- `source /etc/network_turbo`: 提前为您物理开启学术代理，加速海外安装环节防卡死。
-- 不再本地编译，直接让您瞬间下载 Github 社区的 C++ `FlashAttention` 预编译轮子。
-- 采用阿里源及 `hf-mirror` 作为全局镜像，从系统底层彻底解决 `[Errno 101] Network is unreachable` 的恶心报错！
-
-**请直接赋予执行权限并启动这艘穿梭机：**
+### 第二步：首次环境配置（仅需运行一次）
 
 ```bash
-chmod +x start_autodl.sh
-./start_autodl.sh
+chmod +x setup.sh
+./setup.sh
 ```
 
-### 3. 打开网页，体验光速生成！
-当上面的执行跑完一切环境后，或者**未来您需要日常随时启动时**，可以直接运行非常清爽的：
+此脚本会自动完成：
+- 创建 Conda 环境 `voicebox`（Python 3.12）
+- 安装预编译版 FlashAttention-2
+- 安装所有 Python 依赖和 Qwen3-TTS
+- 下载约 4GB 的预训练模型
+
+首次运行约需 10～15 分钟。
+
+### 第三步：日常启动
 
 ```bash
-chmod +x run_autodl.sh
-./run_autodl.sh
+chmod +x run.sh
+./run.sh
 ```
 
-当您看到终端里最后两行显示：
-```text
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:6006 ...
-```
-说明您的引擎已全速上线！此时直接回到 AutoDL 控制台页面，找到名为 **【自定义服务】** 的按钮。点击它，您就能畅游纯外网的网页流式播报体验馆了。
+看到以下输出说明服务已就绪：
 
-> **💡 如果您在本地 Windows 有克隆好的音色想移步服务器？**
-只需在本地把咱们项目的 `new_project/data` 文件夹打个 `.zip` 包传到云端的 `voicebox-qwen-web/new_project/` 下，解压覆盖即可，所有角色满血复活！
+```
+=======================================================
+    🎙️  Voicebox Qwen Web UI (个人主机版)
+    📡 监听端口: 6006
+    🎮 GPU: NVIDIA GeForce RTX XXXX | 显存: XXG
+    📦 已有音色: 3 个 | 历史记录: 12 条
+    🧹 启动清理: 磁盘很干净，无需清理 ✨
+=======================================================
+```
+
+### 第四步：访问网页
+
+- 本机访问：`http://localhost:6006`
+- 局域网访问：`http://你的IP:6006`
+- 公网访问：配置端口转发或反向代理后即可通过域名访问
 
 ---
 
-## 💻 本地 Windows 部署 (如果您的电脑性能够强)
+## 📂 目录结构
 
-### 第一步：创建您的 Conda 分区引擎
-
-```bash
-conda env create -f environment.yml
-conda activate voicebox
 ```
-
-### 第二步：安装底层依赖
-请通过阿里云提供的镜像加速您的搭建过程：
-```bash
-pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple
+📦 voicebox-qwen-web/
+┣ 📂 backend/               # FastAPI 后端（路由、数据库、GPU 队列、模型调用）
+┣ 📂 static/                # 前端（纯 HTML + TailwindCSS + 原生 JS）
+┣ 📂 data/                  # 运行时数据目录（自动生成）
+┃  ┣ 📂 profiles/           #   音色仓库
+┃  ┣ 📂 history/            #   生成历史（WAV 音频）
+┃  ┣ 📂 temp/               #   临时文件（启动时自动清理）
+┃  ┗ 📜 voicebox_local.db   #   SQLite 数据库
+┣ 📜 environment.yml        # Conda 环境配置
+┣ 📜 requirements.txt       # Pip 依赖清单
+┣ 📜 download_models.py     # 模型下载脚本
+┣ 📜 setup.sh               # 首次环境配置脚本
+┗ 📜 run.sh                 # 日常启动脚本
 ```
-
-### 第三步：全自动下载大模型
-为防止 HuggingFace 抽风，我们早已设定好了强力的防失联备用链路：
-```bash
-python download_models.py
-```
-
-### 第四步：双击懒人工具启动
-一切妥当之后，👉 **双击运行项目里的 `run_app.bat`**。
-您的浏览器将自动唤醒 `127.0.0.1:9090`，马上就可以使用您的强力独显去榨干 Qwen 推理引擎了！
 
 ---
-## 目录结构
+
+## 🔧 终端监控
+
+启动后，终端实时显示关键事件（中文输出，无 uvicorn 刷屏）：
+
 ```
-📦 voicebox-qwen-web
-┣ 📂 backend/               # FastAPI 路由逻辑、SQLite管理以及调用模型接口核心
-┣ 📂 static/                # 极致轻量级前端（纯手工 HTML+TailwindCSS+原生 JS）
-┣ 📂 data/                  # （由系统动态生成保管）所有历史听写原件及合成作品数据库
-┣ 📜 environment.yml        # Conda 运行环境指纹备份
-┣ 📜 requirements.txt       # Pip 运行环境指纹备份 (自带 Ubuntu FlashAttention-2 编译引导)
-┣ 📜 download_models.py     # HF 依赖模型极速化预下载执行脚本
-┣ 📜 run_app.bat            # Windows 懒人启动批处理
-┣ 📜 start_autodl.sh        # Ubuntu / AutoDL [首次专用]全环境适配部署脚本
-┗ 📜 run_autodl.sh          # Ubuntu / AutoDL [日常专用] 一键拉起 FastAPI 服务脚本
+📱 [设备上线] 192.168.1.100 | 当前在线设备: 1 台
+🔥 [任务开始] 流式合成     | 来自 192.168.1.100 | 队列: 1 个任务
+✅ [任务完成] 流式合成     | 来自 192.168.1.100 | 耗时 15.2秒 | 📊 显存 8.2/12.0GB
+💤 [服务器空闲] 当前无任务运行，可安全关机
 ```
 
-*Have fun generating clones!*
+---
+
+*Have fun generating clones! 🎉*
