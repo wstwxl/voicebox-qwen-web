@@ -45,4 +45,4 @@ echo "|  点击它，即可在浏览器中体验您的极速 TTS 工作室！   
 echo "==================================================="
 
 # 将 uvicorn 的服务映射到 6006 端口，以配合 AutoDL 的公网隧道
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 6006
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 6006 --no-access-log
