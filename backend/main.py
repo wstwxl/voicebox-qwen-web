@@ -62,7 +62,7 @@ device_tracker = DeviceTracker()
 def gpu_memory_report():
     if torch.cuda.is_available():
         used = torch.cuda.memory_allocated() / 1024**3
-        total = torch.cuda.get_device_properties(0).total_mem / 1024**3
+        total = torch.cuda.get_device_properties(0).total_memory / 1024**3
         pct = used / total * 100 if total > 0 else 0
         return f"📊 显存: {used:.1f}/{total:.1f} GB ({pct:.0f}%)"
     return "📊 显存: N/A (无CUDA)"
@@ -190,7 +190,7 @@ async def startup_event():
     
     # GPU 信息
     gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "无CUDA"
-    gpu_mem = f"{torch.cuda.get_device_properties(0).total_mem / 1024**3:.0f}GB" if torch.cuda.is_available() else "N/A"
+    gpu_mem = f"{torch.cuda.get_device_properties(0).total_memory / 1024**3:.0f}GB" if torch.cuda.is_available() else "N/A"
     
     total_freed_mb = (temp_freed_bytes + orphan_freed_bytes) / 1024 / 1024
     
