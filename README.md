@@ -95,8 +95,7 @@ chmod +x run.sh
 ┃  ┣ 📂 temp/               #   每次心跳结束清理的无主垃圾
 ┃  ┗ 📜 voicebox_local.db   #   关系型 SQLite 大盘数据库
 ┣ 📂 scripts/               # 强大的 CLI 操作控制台工具
-┃  ┣ 📜 admin_tool.py       #   超管可视化终极交互面板引擎 (Inquirer.js Python)
-┃  ┗ 📜 migrate_v*.py       #   防灾数据迁移结构热升级脚本
+┃  ┗ 📜 admin_tool.py       #   超管可视化终极交互面板引擎 (Inquirer.js Python)
 ┣ 📜 environment.yml        # Conda 环境配置
 ┣ 📜 requirements.txt       # Pip 依赖清单 (附有 inquirer)
 ┣ 📜 download_models.py     # 模型下载脚本
@@ -119,13 +118,3 @@ chmod +x run.sh
 💤 [服务器空闲] 当前无任务运行，可安全关机
 ```
 
-如果您想以**站长身份**管理系统内的数据或开除坏人，只需进入命令行通过虚拟环境调用智能面板：
-```bash
-conda activate voicebox
-python scripts/admin_tool.py
-```
-*根据命令行可视化界面指示进行傻瓜式【上下+回车】即可夺取私有模型、全盘备份、销毁账号！*
-
----
-
-*Have fun generating clones! 🎉*
