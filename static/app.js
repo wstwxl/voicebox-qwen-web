@@ -217,6 +217,7 @@ async function uploadAudioBlob(blob, filename) {
         alert('音色提取完成并已持久化保存！');
     } catch (e) {
         console.error(e);
+        if (e.message.includes('cancelled')) return;
         alert('提取失败: ' + e.message);
     } finally {
         hideLoader();
@@ -505,6 +506,7 @@ async function generateTTS() {
         await loadHistory();
     } catch (e) {
         console.error(e);
+        if (e.message.includes('cancelled')) return;
         alert('生成失败: ' + e.message);
     } finally {
         hideLoader(false);
@@ -751,15 +753,163 @@ async function generateTTSStream() {
         }
     } catch (e) {
         console.error(e);
+        if (e.message.includes('cancelled')) return;
         const msg = `❌ 流式生成失败: ${e.message}`;
         streamQueue.markStreamDone(msg);
         if (!streamQueue.isPlaying) {
             statusText.textContent = msg;
             statusDot.className = 'w-2 h-2 rounded-full bg-rose-400 mr-2';
         }
+        if (typeof playerBoxRevealed === 'undefined' || !playerBoxRevealed) {
+            hideLoader(true);
+            alert(msg);
+        }
+    } finally {
+        document.getElementById('btnStreamGenerate').disabled = false;
+    }
+}
+
+// ---------------- Theater Mode ----------------
+function showTheaterModal() {
+    document.getElementById('theaterModal').classList.remove('hidden');
+}
+
+function hideTheaterModal() {
+    document.getElementById('theaterModal').classList.add('hidden');
+}
+
+async function generateTheaterStream() {
+    const script = document.getElementById('inpTheaterScript').value.trim();
+    const model_size = document.getElementById('selModel').value;
+    const language = document.getElementById('selTTSLang').value;
+
+    if (!script) return alert('请输入小剧场剧本！');
+
+    const formData = new FormData();
+    formData.append('script', script);
+    formData.append('model_size', model_size);
+    formData.append('language', language);
+
+    hideTheaterModal();
+
+    // UI elements for the stream player
+    const playerBox = document.getElementById('streamPlayerBox');
+    const statusText = document.getElementById('streamStatusText');
+    const statusDot = document.getElementById('streamStatusDot');
+    const chunkInfo = document.getElementById('streamChunkInfo');
+    const audioPlayer = document.getElementById('streamAudioPlayer');
+
+    playerBox.classList.add('hidden');
+    await showGpuLoader("正在等待 GPU 资源分配（小剧场演绎）...");
+    if (currentTaskId) formData.append('task_id', currentTaskId);
+
+    document.getElementById('btnGenerate').disabled = true;
+    document.getElementById('btnStreamGenerate').disabled = true;
+    const btnTheaterGenerate = document.getElementById('btnTheaterGenerate');
+    if (btnTheaterGenerate) btnTheaterGenerate.disabled = true;
+
+    try {
+        const res = await fetch(`${API_BASE}/theater_stream`, {
+            method: 'POST',
+            body: formData
+        });
+
+        if (!res.ok) throw new Error(await res.text());
+
+        let playerBoxRevealed = false;
+        const revealPlayerBox = () => {
+            if (!playerBoxRevealed) {
+                playerBoxRevealed = true;
+                hideLoader(false);
+                playerBox.classList.remove('hidden');
+                statusDot.className = 'w-2 h-2 rounded-full bg-purple-400 animate-pulse mr-2';
+                statusText.textContent = '小剧场连接已建立，马上开始...';
+                chunkInfo.textContent = '';
+                audioPlayer.src = '';
+                streamQueue.reset(audioPlayer, statusText, statusDot, chunkInfo);
+            }
+        };
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const jsonStr = line.slice(6);
+                let event;
+                try { event = JSON.parse(jsonStr); } catch { continue; }
+
+                if (event.type === 'queue') {
+                    const pos = event.position;
+                    if (pos === 0) {
+                        revealPlayerBox();
+                        statusDot.className = 'w-2 h-2 rounded-full bg-yellow-400 animate-pulse mr-2';
+                        statusText.textContent = `小剧场响应已送达！正在解码推流...`;
+                    }
+                }
+                else if (event.type === 'info') {
+                    revealPlayerBox();
+                    streamQueue.totalChunks = event.total_chunks;
+                    statusDot.className = 'w-2 h-2 rounded-full bg-purple-400 animate-pulse mr-2';
+                    statusText.textContent = `开演！小剧场生成中 (共 ${event.total_chunks} 句)...`;
+                }
+                else if (event.type === 'chunk') {
+                    revealPlayerBox();
+                    chunkInfo.textContent = `${event.index + 1}/${event.total} 段已生成`;
+                    const binaryStr = atob(event.audio_b64);
+                    const bytes = new Uint8Array(binaryStr.length);
+                    for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+                    const blob = new Blob([bytes], { type: 'audio/wav' });
+                    streamQueue.addChunk(URL.createObjectURL(blob));
+                }
+                else if (event.type === 'done') {
+                    const msg = `🎭 小剧场生成完成！总时长 ${event.duration.toFixed(1)}s`;
+                    streamQueue.markStreamDone(msg);
+                    chunkInfo.textContent = `全部 ${streamQueue.totalChunks} 段已生成`;
+                    if (!streamQueue.isPlaying) {
+                        statusText.textContent = msg;
+                        statusDot.className = 'w-2 h-2 rounded-full bg-blue-400 mr-2';
+                    }
+                    await loadHistory();
+                }
+                else if (event.type === 'error') {
+                    const msg = `❌ 小剧场报错: ${event.message}`;
+                    streamQueue.markStreamDone(msg);
+                    if (!streamQueue.isPlaying) {
+                        statusText.textContent = msg;
+                        statusDot.className = 'w-2 h-2 rounded-full bg-rose-400 mr-2';
+                    }
+                    if (!playerBoxRevealed) {
+                        hideLoader(true);
+                        alert(msg);
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.error(e);
+        if (e.message.includes('cancelled')) return;
+        const msg = `❌ 剧场生成失败: ${e.message}`;
+        streamQueue.markStreamDone(msg);
+        if (!streamQueue.isPlaying) {
+            statusText.textContent = msg;
+            statusDot.className = 'w-2 h-2 rounded-full bg-rose-400 mr-2';
+        }
+        hideLoader(true);
+        alert(msg);
     } finally {
         document.getElementById('btnGenerate').disabled = false;
         document.getElementById('btnStreamGenerate').disabled = false;
+        if (btnTheaterGenerate) btnTheaterGenerate.disabled = false;
     }
 }
 
@@ -776,8 +926,21 @@ async function loadHistory() {
         }
 
         historyList.innerHTML = histories.map(h => {
-            const timeStr = h.created_at.replace('T', ' ').split('.')[0];
-            const instructBadge = h.instruct ? `<span class="bg-accent/20 text-accent text-[10px] px-2 py-0.5 rounded ml-2 border border-accent/30 font-semibold" title="情绪提示词">"${h.instruct}"</span>` : '';
+            const dateObj = new Date(h.created_at.replace(' ', 'T') + 'Z');
+            const timeStr = !isNaN(dateObj) ? dateObj.toLocaleString('zh-CN', {
+                hour12: false,
+                year: 'numeric', month: '2-digit', day: '2-digit',
+                hour: '2-digit', minute: '2-digit', second: '2-digit'
+            }).replace(/\//g, '-') : h.created_at.replace('T', ' ').split('.')[0];
+
+            const isTheater = h.text && h.text.startsWith('【小剧场】');
+            let speakerBadge = `<span class="bg-indigo-900/50 text-indigo-300 text-[10px] px-2 py-0.5 rounded border border-indigo-700/50 font-medium">${h.profile_name}</span>`;
+            let instructBadge = h.instruct ? `<span class="bg-accent/20 text-accent text-[10px] px-2 py-0.5 rounded ml-2 border border-accent/30 font-semibold" title="情绪提示词">"${h.instruct}"</span>` : '';
+
+            if (isTheater) {
+                speakerBadge = `<span class="bg-purple-900/50 text-purple-300 text-[10px] px-2 py-0.5 rounded border border-purple-700/50 font-medium whitespace-nowrap">🎬 小剧场</span>`;
+                instructBadge = h.instruct ? `<span class="bg-purple-900/50 text-purple-200 text-[10px] px-2 py-0.5 rounded border border-purple-500/50 ml-2 font-medium">👥 参与：${h.instruct.replace('小剧场演员：', '')}</span>` : '';
+            }
 
             return `
             <div class="p-4 rounded-xl bg-card border border-slate-700 hover:border-brand/40 transition-colors shadow-sm group">
@@ -785,8 +948,8 @@ async function loadHistory() {
                     <input type="checkbox" class="hist-checkbox mt-1 mr-3 w-4 h-4 rounded border-gray-600 text-brand focus:ring-brand bg-slate-800" value="${h.id}" data-filename="${h.profile_name}-${h.language}-${h.duration.toFixed(1)}s.wav">
                     <div class="flex-grow">
                         <div class="flex items-center justify-between mb-1">
-                            <div class="flex items-center">
-                                <span class="bg-indigo-900/50 text-indigo-300 text-[10px] px-2 py-0.5 rounded border border-indigo-700/50 font-medium">${h.profile_name}</span>
+                            <div class="flex items-center flex-wrap gap-y-1">
+                                ${speakerBadge}
                                 ${instructBadge}
                             </div>
                             <span class="text-[10px] text-gray-500">${timeStr} (${h.duration.toFixed(1)}s)</span>

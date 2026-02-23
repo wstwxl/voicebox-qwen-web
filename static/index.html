@@ -303,6 +303,15 @@
                         </svg>
                         流式合成
                     </button>
+                    <button id="btnTheaterModal" onclick="showTheaterModal()"
+                        class="w-full sm:w-auto bg-gradient-to-r from-purple-600 to-pink-500 hover:from-purple-500 hover:to-pink-400 text-white font-medium py-2 px-6 rounded-lg shadow-lg shadow-purple-500/20 transform transition-all active:scale-95 flex items-center justify-center">
+                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z">
+                            </path>
+                        </svg>
+                        小剧场
+                    </button>
                 </div>
 
                 <!-- 流式播放器 (仅流式生成时显示) -->
@@ -360,11 +369,75 @@
         <div class="text-xl font-medium text-white shadow-black drop-shadow-lg" id="loaderText">正在使用 RTX 4090D 推理生成 ...
         </div>
         <div class="text-sm mt-2 text-gray-300">Qwen3-TTS 算法正在进行高速张量计算</div>
-        
+
         <button id="btnCancelQueue" onclick="cancelCurrentTask()" type="button"
             class="mt-6 border border-rose-500/50 hover:bg-rose-500/20 text-rose-300 px-4 py-1.5 rounded-full text-sm font-medium transition-colors">
             取消排队
         </button>
+    </div>
+
+    <!-- 小剧场 Modal -->
+    <div id="theaterModal"
+        class="fixed inset-0 bg-black/70 backdrop-blur-md z-[60] hidden flex items-center justify-center p-4">
+        <div class="bg-card border border-slate-700 w-full max-w-3xl rounded-2xl shadow-2xl flex flex-col max-h-[90vh]">
+            <div class="p-5 border-b border-slate-700 flex justify-between items-center">
+                <h2 class="text-xl font-bold flex items-center">
+                    <svg class="w-6 h-6 mr-2 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z">
+                        </path>
+                    </svg>
+                    小剧场多重流式演绎
+                </h2>
+                <button onclick="hideTheaterModal()" class="text-gray-400 hover:text-white transition-colors">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12">
+                        </path>
+                    </svg>
+                </button>
+            </div>
+
+            <div class="p-5 overflow-y-auto flex-grow space-y-4">
+                <div class="bg-indigo-900/30 border border-indigo-500/30 rounded-xl p-4 text-sm text-gray-300">
+                    <h4 class="text-indigo-300 font-bold mb-2 text-base">📝 剧本编写格式与规则要求</h4>
+                    <ul class="list-disc list-inside space-y-1 ml-1 mb-3">
+                        <li>第一步：主界面的<b>“模型”</b>和<b>“语种”</b>选择对此处同样生效。</li>
+                        <li>段落的第一行为<b class="text-white">现有音色库中的准确名称</b>（如 Amor, Q）。下一行（或多行）为该角色的台词。</li>
+                        <li>情感指示词必须紧随角色名下方的新行，且放在台词的最开头，使用英文或中文括号 <code>()</code> 或 <code>（）</code> 括起来（甚至半中半英也可识别）。
+                        </li>
+                        <li>如果话语中出现多个括号，系统<b>仅提取第一个符合条件的括号内容</b>作情感指令，该括号后面的保留在文本中。如果不写，则情感为空。</li>
+                        <li><b class="text-rose-400">注意：</b>主界面若选择的是 <b>0.6B模型</b>，无法接收情感指令，即便剧本中有括号，也会被系统自动剥离忽略。</li>
+                    </ul>
+                    <div
+                        class="bg-black/40 p-3 rounded-lg border border-indigo-800/50 font-mono text-xs text-indigo-200">
+                        Amor<br>
+                        (开心的说)先帝创业未半而中道崩殂，今天下三分，益州疲弊，此诚危急存亡之秋也。<br><br>
+                        Q<br>
+                        (沮丧的说)然侍卫之臣不懈于内，忠志之士忘身于外者...
+                    </div>
+                </div>
+
+                <div class="flex flex-col">
+                    <label class="block text-sm font-medium text-gray-400 mb-2">编排剧本内容</label>
+                    <textarea id="inpTheaterScript" rows="8" placeholder="请在此处黏贴您的小剧场剧本..."
+                        class="w-full bg-dark border border-slate-600 rounded-lg px-4 py-3 text-sm focus:ring-1 focus:ring-purple-500 outline-none resize-y font-mono"></textarea>
+                </div>
+            </div>
+
+            <div class="p-5 border-t border-slate-700 bg-slate-800/30 flex justify-end gap-3 rounded-b-2xl">
+                <button id="btnTheaterGenerate" onclick="generateTheaterStream()"
+                    class="bg-gradient-to-r from-purple-600 to-pink-500 hover:from-purple-500 hover:to-pink-400 text-white font-medium px-5 py-2 rounded-lg shadow-lg shadow-purple-500/20 transform transition-all active:scale-95 flex items-center">
+                    <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z">
+                        </path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                    开始小剧场流式演绎
+                </button>
+            </div>
+        </div>
     </div>
 
     <!-- Scripts -->

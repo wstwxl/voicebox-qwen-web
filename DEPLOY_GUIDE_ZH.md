@@ -87,13 +87,70 @@ cp ~/.acme.sh/xxxx_ecc/ amorwest.cn.key /path/to/voice_project/amorwest.cn.key
 ```
 确保显示正在监听 `Uvicorn running on http://0.0.0.0:6006`。
 
-**终端窗口 2：启动 SakuraFrp 隧道**
-前往 SakuraFrp 后台获取针对 `Linux amd64` 的最新客户端并赋权后，启动通道：
+**终端窗口 2（旧版手动方式）：启动 SakuraFrp 隧道**
+前往 SakuraFrp 后台获取针对 `Linux amd64` 的最新客户端并赋权后，手动启动（不推荐，容易假死断线）：
 ```bash
 chmod +x frpc
 ./frpc -f 你的专属密钥参数
 ```
-当终端输出 `已为 xxxx 加载证书 [CN = amorwest.cn...]` 以及 `隧道启动成功` 时。
+
+---
+
+### 🌟 进阶必备：给樱花穿透打上“不死金牌”（Systemd 守护进程守护）
+
+对于服务器来说，绝对不能靠在终端里手动运行 `./frpc` 来保持服务。遇到跨国网络阻断（`i/o timeout`）时，frpc 极易陷入“假死”等待，导致致命断线。我们需要把它做成“系统守护进程”（Systemd 服务），让 Linux 系统来当“监工”，一旦发现它死掉或假死，系统直接把它杀掉并在 5 秒钟内重新拉起。
+
+**第一步：创建 Systemd 守护进程服务**
+在终端执行以下命令，创建一个服务配置文件（需要输入 `sudo` 密码）：
+```bash
+sudo nano /etc/systemd/system/sakurafrp.service
+```
+
+在打开的编辑器中，将以下内容粘贴进去（请将 `ExecStart` 路径替换为你自己的绝对路径和开启参数）：
+```ini
+[Unit]
+Description=Sakura Frp Client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=amor
+# 关键修复1：指定工作运行目录，解决写入权限报错
+WorkingDirectory=/home/amor/B_其他项目/voice_project/
+# 你的 frpc 绝对路径和参数
+ExecStart=/home/amor/B_其他项目/voice_project/frpc -f uxwwjcx48hvgo5db1monw16tiyb9niro:26057972
+# 核心保活机制：无论正常退出还是异常崩溃，都自动重启
+Restart=always
+# 崩溃后等待 5 秒再重启，防止疯狂重启导致被樱花官方封禁
+RestartSec=5
+# 限制单次连接的最长时间，防止进程假死
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+*(粘贴后，按 `Ctrl+O` 保存，按 `Enter` 确认，再按 `Ctrl+X` 退出)*
+
+**第二步：启动并设置开机自启**
+依次执行以下三条命令，让“监工”开始工作：
+```bash
+# 1. 重新加载系统服务配置
+sudo systemctl daemon-reload
+
+# 2. 设置为开机自动启动（服务器重启也不怕了）
+sudo systemctl enable sakurafrp.service
+
+# 3. 立即启动服务
+sudo systemctl start sakurafrp.service
+```
+
+**如何查看运行状态？**
+以后你不需要再用 `./frpc ...` 启动了。直接丢掉终端或关闭 SSH，想看日志或者状态，直接输入：
+- **查看状态**：`sudo systemctl status sakurafrp.service`
+- **查看实时日志**：`journalctl -u sakurafrp.service -f`
+
+有了这个配置，即使网络波动导致 `i/o timeout` 假死崩溃，Linux 也会在 5 秒后自动帮你重新拉起一个新的隧道，服务永远在线。
 
 **🎉 恭喜你，大功告成！**
-此时用世界上任意角落的手机或电脑访问 `https://你的域名`。由于走的是极速通道且挂载了完全合法的前端证书，网络延迟已经骤降至两位数，且浏览器没有任何警报提示，麦克风将绝对完美地被授权收音工作！
+此时用世界上任意角落的手机或电脑访问 `https://你的域名`。由于走的是极速通道且挂载了完全合法的前端证书，同时拥有操作系统的进程级守护，网络延迟骤降至两位数且固若金汤，前端浏览器不再产生任何安全警报，麦克风随时为你待命！

@@ -78,15 +78,22 @@ class SimpleTTSEngine:
     ) -> Tuple[np.ndarray, int]:
         await self.load_model(model_size)
         
+        import copy
+        
+        # Prevent infinite generation loops caused by trailing unhandled full-width punctuations
+        safe_text = text.replace('……', '...').replace('——', '--')
+        safe_instruct = instruct.replace('……', '...').replace('——', '--') if instruct else None
+        
         def _generate():
             # generate_voice_clone returns a tuple containing list of generated wav arrays, and sample_rate
             kwargs = {
-                "text": text,
-                "voice_clone_prompt": voice_prompt,
+                "text": safe_text,
+                # Deepcopy prompt to prevent internal state mutation affecting subsequent chunks for the same speaker
+                "voice_clone_prompt": copy.deepcopy(voice_prompt),
                 "language": language
             }
-            if instruct:
-                kwargs["instruct"] = instruct
+            if safe_instruct:
+                kwargs["instruct"] = safe_instruct
                 
             return self.model.generate_voice_clone(**kwargs)
             
