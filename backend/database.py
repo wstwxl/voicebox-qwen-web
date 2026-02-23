@@ -37,6 +37,35 @@ def init_db():
             FOREIGN KEY (profile_id) REFERENCES profiles (id)
         )
     ''')
+    # Base logic: Try creating fields if they don't exist
+    try:
+        c.execute("ALTER TABLE profiles ADD COLUMN owner TEXT DEFAULT 'amorwest'")
+        c.execute("ALTER TABLE profiles ADD COLUMN is_default BOOLEAN DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass # Columns already exist
+        
+    try:
+        c.execute("ALTER TABLE history ADD COLUMN username TEXT DEFAULT 'amorwest'")
+    except sqlite3.OperationalError:
+        pass 
+        
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            role TEXT NOT NULL DEFAULT 'regular',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS hidden_profiles (
+            username TEXT NOT NULL,
+            profile_id TEXT NOT NULL,
+            hidden_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (username, profile_id)
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 

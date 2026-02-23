@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -196,12 +196,14 @@ async def _handle_extract_profile(task):
     # ★ 写库前再次确认
     _check_cancelled(task_id, profile_folder)
     
+    username = task.get("username", "amorwest")
+
     # Save to DB
     conn = get_db_connection()
     c = conn.cursor()
     c.execute(
-        "INSERT INTO profiles (id, name, description, prompt_path) VALUES (?, ?, ?, ?)",
-        (profile_id, name, description, str(prompt_1_7B_path))
+        "INSERT INTO profiles (id, name, description, prompt_path, owner, is_default) VALUES (?, ?, ?, ?, ?, 0)",
+        (profile_id, name, description, str(prompt_1_7B_path), username)
     )
     conn.commit()
     
@@ -275,13 +277,16 @@ async def _handle_generate(task):
     audio_file = HISTORY_DIR / f"{gen_id}.wav"
     sf.write(str(audio_file), audio_array, sr)
     
+    # insert history with username
+    username = task.get("username", "amorwest")
+    history_id = str(uuid.uuid4()) # Use a new ID for history entry
     c.execute(
-        "INSERT INTO history (id, profile_id, text, language, instruct, audio_path, duration) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (gen_id, profile_id, text, language, instruct, str(audio_file), dur)
+        "INSERT INTO history (id, profile_id, text, language, instruct, audio_path, duration, username) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (history_id, profile_id, text, language, instruct, str(audio_file), dur, username)
     )
     conn.commit()
     
-    c.execute("SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name FROM history h LEFT JOIN profiles p ON h.profile_id = p.id WHERE h.id=?", (gen_id,))
+    c.execute("SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name FROM history h LEFT JOIN profiles p ON h.profile_id = p.id WHERE h.id=?", (history_id,))
     history_row = c.fetchone()
     conn.close()
     
@@ -390,9 +395,10 @@ async def _handle_generate_stream(task):
             audio_file = HISTORY_DIR / f"{gen_id}.wav"
             sf.write(str(audio_file), full_audio, sample_rate)
             
+            username = task.get("username", "amorwest")
             c.execute(
-                "INSERT INTO history (id, profile_id, text, language, instruct, audio_path, duration) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (gen_id, profile_id, text, language, instruct, str(audio_file), dur)
+                "INSERT INTO history (id, profile_id, text, language, instruct, audio_path, duration, username) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (gen_id, profile_id, text, language, instruct, str(audio_file), dur, username)
             )
             conn.commit()
             
@@ -512,35 +518,49 @@ async def _handle_theater_stream(task):
         # Save complete history
         if all_audio_arrays:
             full_audio = np.concatenate(all_audio_arrays)
-            dur = len(full_audio) / sample_rate
-            gen_id = str(uuid.uuid4())
-            audio_file = HISTORY_DIR / f"{gen_id}.wav"
-            sf.write(str(audio_file), full_audio, sample_rate)
+            total_dur = len(full_audio) / sample_rate
+            final_file_id = str(uuid.uuid4())
+            final_file = HISTORY_DIR / f"{final_file_id}.wav"
+            sf.write(str(final_file), full_audio, sample_rate)
             
             full_script_text = "\n\n".join([f"[{i['speaker_name']}]\n{i['text']}" for i in script_items])
             
             seen_speakers = set()
-            speakers = []
-            speaker_pids = []
+            all_used_names = []
+            all_used_pids = []
             for i in script_items:
                 if i["speaker_name"] not in seen_speakers:
                     seen_speakers.add(i["speaker_name"])
-                    speakers.append(i["speaker_name"])
-                    speaker_pids.append(i["profile_id"])
+                    all_used_names.append(i["speaker_name"])
+                    all_used_pids.append(i["profile_id"])
             
-            speaker_names_str = "、".join(speakers)
+            speaker_names_str = "、".join(all_used_names)
             # Store all involved PIDs comma-separated for later lookup
-            all_pids_str = ",".join(speaker_pids)
+            all_pids_str = ",".join(all_used_pids)
+            
+            conn = get_db_connection()
+            c = conn.cursor()
+            
+            username = task.get("username", "amorwest")
+            history_id = str(uuid.uuid4())
             
             c.execute(
-                "INSERT INTO history (id, profile_id, text, language, instruct, audio_path, duration) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (gen_id, all_pids_str, "【小剧场】\n\n" + full_script_text, language, "小剧场演员：" + speaker_names_str, str(audio_file), dur)
+                "INSERT INTO history (id, profile_id, text, language, instruct, audio_path, duration, username) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (history_id, 
+                 ",".join(all_used_pids), 
+                 "【小剧场】\n" + "\n\n".join([f"[{item['speaker_name']}]\n{item['text']}" for item in script_items]), 
+                 language, 
+                 "小剧场演员：" + "、".join(all_used_names), 
+                 str(final_file), 
+                 total_dur,
+                 username)
             )
+            
             conn.commit()
             
-            await q.put({"type": "done", "history_id": gen_id, "duration": dur})
+            await q.put({"type": "done", "history_id": history_id, "duration": total_dur})
             job_statuses[task_id]["status"] = "done"
-            c.execute("SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name FROM history h LEFT JOIN profiles p ON h.profile_id = p.id WHERE h.id=?", (gen_id,))
+            c.execute("SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name FROM history h LEFT JOIN profiles p ON h.profile_id = p.id WHERE h.id=?", (history_id,))
             job_statuses[task_id]["result"] = dict(c.fetchone())
         else:
             job_statuses[task_id]["status"] = "error"
@@ -580,21 +600,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ============ 用户活动状态追踪 ============
+active_users = {}
+
+async def monitor_user_activity():
+    try:
+        while True:
+            await asyncio.sleep(60) # 每 60 秒检查一次
+            now = time.time()
+            expired_users = []
+            for uname, last_seen in active_users.items():
+                if now - last_seen > 300: # 5 分钟无操作视为离开
+                    expired_users.append(uname)
+                    
+            for uname in expired_users:
+                print(f"👋 [系统通知] 用户 '{uname}' 已长时间无操作，疑似离开。")
+                del active_users[uname]
+    except asyncio.CancelledError:
+        pass  # 优雅退出
+
+def update_user_activity(username: str):
+    if not username:
+         return
+    now = time.time()
+    if username not in active_users:
+         print(f"🎉 [系统通知] 用户 '{username}' 刚刚登录进入了系统！")
+    active_users[username] = now
+
+
 # ============ 设备追踪中间件 ============
 class DeviceTrackingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         ip = request.client.host if request.client else "unknown"
         device_tracker.heartbeat(ip)
+        
+        username = request.headers.get("X-User-Name", "").strip()
+        if username and re.match(r"^[a-z0-9_]+$", username):
+            update_user_activity(username)
+            
         response = await call_next(request)
         return response
 
 app.add_middleware(DeviceTrackingMiddleware)
 
 
+# 保存后台任务引用，shutdown 时主动 cancel
+_background_tasks = []
+
 @app.on_event("startup")
 async def startup_event():
-    # 启动后台工作线程
-    asyncio.create_task(bg_gpu_worker())
+    # 启动后台工作线程，保存引用以便 shutdown 时取消
+    t1 = asyncio.create_task(bg_gpu_worker())
+    t2 = asyncio.create_task(monitor_user_activity())
+    _background_tasks.extend([t1, t2])
     
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -659,6 +717,15 @@ async def startup_event():
     print("    等待用户连接中...\n")
 
 
+@app.on_event("shutdown")
+async def shutdown_event():
+    print("\n🛑 [服务关闭] 正在优雅停止后台任务...")
+    for task in _background_tasks:
+        task.cancel()
+    await asyncio.gather(*_background_tasks, return_exceptions=True)
+    print("✅ [服务关闭] 所有后台任务已安全终止。再见！\n")
+
+
 @app.post("/api/queue_register")
 async def queue_register():
     """Frontend calls this BEFORE sending GPU work to get a personal queue ticket."""
@@ -717,6 +784,10 @@ async def create_profile(
     reference_text: str = Form(...),
     task_id: str = Form(None)
 ):
+    username = request.headers.get("X-User-Name")
+    if not username or not re.match(r"^[a-z0-9_]+$", username):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-User-Name header")
+
     if not task_id:
         task_id = str(uuid.uuid4())
         job_statuses[task_id] = {"status": "queued", "created_at": time.time(), "result": None, "error": None}
@@ -742,7 +813,8 @@ async def create_profile(
         "profile_id": profile_id,
         "name_field": name,
         "description": description,
-        "reference_text": reference_text
+        "reference_text": reference_text,
+        "username": username  # Attach user identity to the background task
     }
     
     # 确保状态存在并修改为 queued
@@ -766,18 +838,74 @@ async def create_profile(
     return status_info["result"]
 
 @app.get("/api/profiles", response_model=list[ProfileResponse])
-async def list_profiles():
+async def list_profiles(request: Request):
+    username = request.headers.get("X-User-Name")
+    if not username or not re.match(r"^[a-z0-9_]+$", username):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-User-Name header")
+
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT * FROM profiles ORDER BY created_at DESC")
-    rows = c.fetchall()
+    
+    # 获取用户角色（如果不存在则顺便静默注册）
+    c.execute("SELECT role FROM users WHERE username=?", (username,))
+    user_row = c.fetchone()
+    if not user_row:
+        c.execute("INSERT INTO users (username, role) VALUES (?, 'regular')", (username,))
+        conn.commit()
+        role = "regular"
+        print(f"🌟 [系统通知] 欢迎新用户注册！'{username}' 首次登录创建了专属沙箱。")
+    else:
+        role = user_row["role"]
+        
+    if role == "admin":
+        # Admin 拥有上帝视角，看所有未过滤数据
+        c.execute("SELECT * FROM profiles ORDER BY created_at DESC")
+        rows = c.fetchall()
+    else:
+        # 普通用户：过滤看自己的 + 全局未被自己隐藏的 default
+        c.execute("""
+            SELECT * FROM profiles 
+            WHERE owner = ? 
+               OR (is_default = 1 AND id NOT IN (SELECT profile_id FROM hidden_profiles WHERE username = ?))
+            ORDER BY created_at DESC
+        """, (username, username))
+        rows = c.fetchall()
+        
     conn.close()
     return [dict(r) for r in rows]
 
 @app.delete("/api/profiles/{profile_id}")
-async def delete_profile(profile_id: str):
+async def delete_profile(profile_id: str, request: Request):
+    username = request.headers.get("X-User-Name")
+    if not username or not re.match(r"^[a-z0-9_]+$", username):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-User-Name header")
+
     conn = get_db_connection()
     c = conn.cursor()
+    
+    c.execute("SELECT role FROM users WHERE username=?", (username,))
+    user_row = c.fetchone()
+    role = user_row["role"] if user_row else "regular"
+    
+    c.execute("SELECT owner, is_default FROM profiles WHERE id=?", (profile_id,))
+    target = c.fetchone()
+    if not target:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Profile not found")
+        
+    if target["is_default"] == 1:
+        # 默认音色：不可物理删除（即使是 admin 也不在前台轻易真删），只做逻辑隐藏
+        c.execute("INSERT OR IGNORE INTO hidden_profiles (username, profile_id) VALUES (?, ?)", (username, profile_id))
+        conn.commit()
+        conn.close()
+        return {"message": "hidden"}
+        
+    # 私有音色：判断权限
+    if target["owner"] != username and role != "admin":
+        conn.close()
+        raise HTTPException(status_code=403, detail="Forbidden: Not your profile")
+        
+    # 硬物理删除
     c.execute("DELETE FROM profiles WHERE id=?", (profile_id,))
     conn.commit()
     conn.close()
@@ -846,6 +974,10 @@ async def generate_audio(
     instruct: str = Form(None),
     task_id: str = Form(None)
 ):
+    username = request.headers.get("X-User-Name")
+    if not username or not re.match(r"^[a-z0-9_]+$", username):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-User-Name header")
+
     if not task_id:
         task_id = str(uuid.uuid4())
         job_statuses[task_id] = {"status": "queued", "created_at": time.time(), "result": None, "error": None}
@@ -860,7 +992,8 @@ async def generate_audio(
         "text": text,
         "language": language,
         "model_size": model_size,
-        "instruct": instruct
+        "instruct": instruct,
+        "username": username
     }
     
     if task_id not in job_statuses:
@@ -911,6 +1044,10 @@ async def generate_audio_stream(
     instruct: str = Form(None),
     task_id: str = Form(None)
 ):
+    username = request.headers.get("X-User-Name")
+    if not username or not re.match(r"^[a-z0-9_]+$", username):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-User-Name header")
+
     if not task_id:
         task_id = str(uuid.uuid4())
         job_statuses[task_id] = {"status": "queued", "created_at": time.time(), "result": None, "error": None}
@@ -929,7 +1066,8 @@ async def generate_audio_stream(
         "text": text,
         "language": language,
         "model_size": model_size,
-        "instruct": instruct
+        "instruct": instruct,
+        "username": username
     }
     
     if task_id not in job_statuses:
@@ -1011,9 +1149,26 @@ async def generate_theater_stream(
     model_size: str = Form("1.7B"),
     task_id: str = Form(None)
 ):
+    username = request.headers.get("X-User-Name")
+    if not username or not re.match(r"^[a-z0-9_]+$", username):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-User-Name header")
+
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT id, name FROM profiles")
+    # Ensure they can only act with profiles they actually have access to
+    c.execute("SELECT role FROM users WHERE username=?", (username,))
+    user_row = c.fetchone()
+    role = user_row["role"] if user_row else "regular"
+    
+    if role == "admin":
+        c.execute("SELECT id, name FROM profiles")
+    else:
+        c.execute("""
+            SELECT id, name FROM profiles 
+            WHERE owner = ? 
+               OR (is_default = 1 AND id NOT IN (SELECT profile_id FROM hidden_profiles WHERE username = ?))
+        """, (username, username))
+        
     profiles_map = {row["name"]: row["id"] for row in c.fetchall()}
     conn.close()
 
@@ -1039,8 +1194,6 @@ async def generate_theater_stream(
             current_text = []
         else:
             if current_name is None:
-                # If we haven't found a valid name yet, and it's not a known speaker,
-                # we just set it as the current_name (it will fail later with the 400 error letting user know)
                 current_name = line
             else:
                 current_text.append(line)
@@ -1057,7 +1210,7 @@ async def generate_theater_stream(
         content = seg["content"]
         
         if name not in profiles_map:
-            raise HTTPException(status_code=400, detail=f"找不到名为 '{name}' 的音色，请检查剧本角色名。")
+            raise HTTPException(status_code=400, detail=f"找不到名为 '{name}' 的音色(或您无权访问)，请检查剧本角色名。")
             
         profile_id = profiles_map[name]
         
@@ -1102,7 +1255,8 @@ async def generate_theater_stream(
         "ip": client_ip,
         "script_items": parsed_items,
         "language": language,
-        "model_size": model_size
+        "model_size": model_size,
+        "username": username
     }
     
     if task_id not in job_statuses:
@@ -1173,11 +1327,19 @@ async def queue_status():
     return {"tasks_in_queue": job_queue.qsize(), "is_active": len([k for k,v in job_statuses.items() if v.get("status") == "processing"]) > 0}
 
 @app.get("/api/history", response_model=list[HistoryResponse])
-async def list_history():
+async def list_history(request: Request):
+    username = request.headers.get("X-User-Name")
+    if not username or not re.match(r"^[a-z0-9_]+$", username):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-User-Name header")
+
     conn = get_db_connection()
     c = conn.cursor()
-    # Basic list
-    c.execute("SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name FROM history h LEFT JOIN profiles p ON h.profile_id = p.id ORDER BY h.created_at DESC")
+    
+    c.execute("SELECT role FROM users WHERE username=?", (username,))
+    user_row = c.fetchone()
+    role = user_row["role"] if user_row else "regular"
+    
+    c.execute("SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name FROM history h LEFT JOIN profiles p ON h.profile_id = p.id WHERE h.username = ? ORDER BY h.created_at DESC", (username,))
     rows = [dict(r) for r in c.fetchall()]
     
     # Enrich Theater items with detailed profile awareness
@@ -1218,15 +1380,30 @@ async def list_history():
     return rows
 
 @app.delete("/api/history/{history_id}")
-async def delete_history(history_id: str):
+async def delete_history(history_id: str, request: Request):
+    username = request.headers.get("X-User-Name")
+    if not username or not re.match(r"^[a-z0-9_]+$", username):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-User-Name header")
+
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute("SELECT audio_path FROM history WHERE id=?", (history_id,))
+    c.execute("SELECT role FROM users WHERE username=?", (username,))
+    user_row = c.fetchone()
+    role = user_row["role"] if user_row else "regular"
+
+    c.execute("SELECT username, audio_path FROM history WHERE id=?", (history_id,))
     row = c.fetchone()
-    if row:
-        audio_file = Path(row["audio_path"])
-        if audio_file.exists():
-            audio_file.unlink()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Not found")
+        
+    if row["username"] != username and role != "admin":
+        conn.close()
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    audio_file = Path(row["audio_path"])
+    if audio_file.exists():
+        audio_file.unlink()
             
     c.execute("DELETE FROM history WHERE id=?", (history_id,))
     conn.commit()
@@ -1234,23 +1411,42 @@ async def delete_history(history_id: str):
     return {"message": "deleted"}
 
 @app.post("/api/history/batch_download")
-async def batch_download(req: BatchDownloadRequest):
+async def batch_download(req: BatchDownloadRequest, request: Request):
+    username = request.headers.get("X-User-Name")
+    if not username or not re.match(r"^[a-z0-9_]+$", username):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-User-Name header")
+
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT role FROM users WHERE username=?", (username,))
+    user_row = c.fetchone()
+    role = user_row["role"] if user_row else "regular"
+    
     if not req.ids:
         raise HTTPException(status_code=400, detail="No IDs provided")
         
-    conn = get_db_connection()
-    c = conn.cursor()
     placeholders = ",".join(["?"] * len(req.ids))
     
-    # query history, sort by creation time ASC to order from old to new
-    query = f"""
-        SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name 
-        FROM history h 
-        LEFT JOIN profiles p ON h.profile_id = p.id 
-        WHERE h.id IN ({placeholders})
-        ORDER BY h.created_at ASC
-    """
-    c.execute(query, req.ids)
+    if role == "admin":
+        query = f"""
+            SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name 
+            FROM history h 
+            LEFT JOIN profiles p ON h.profile_id = p.id 
+            WHERE h.id IN ({placeholders})
+            ORDER BY h.created_at ASC
+        """
+        c.execute(query, req.ids)
+    else:
+        query = f"""
+            SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name 
+            FROM history h 
+            LEFT JOIN profiles p ON h.profile_id = p.id 
+            WHERE h.id IN ({placeholders}) AND h.username = ?
+            ORDER BY h.created_at ASC
+        """
+        params = list(req.ids) + [username]
+        c.execute(query, params)
+        
     rows = c.fetchall()
     conn.close()
     
@@ -1278,14 +1474,34 @@ async def batch_download(req: BatchDownloadRequest):
     )
 
 @app.get("/audio/history/{history_id}")
-async def get_history_audio(history_id: str):
+async def get_history_audio(history_id: str, request: Request):
+    # This might be tricky because it's called via <audio src="..."> 
+    # Usually standard browsers don't send custom headers in <audio src> 
+    # We'll allow it but restrict if possible, or we might need to rely on the frontend fetching it as a blob.
+    # To keep it simple and given the current architecture for audio streaming:
+    username = request.headers.get("X-User-Name")
+    
     conn = get_db_connection()
     c = conn.cursor()
+    
+    if username:
+        c.execute("SELECT role FROM users WHERE username=?", (username,))
+        user_row = c.fetchone()
+        role = user_row["role"] if user_row else "regular"
+    else:
+        role = "regular"
+        username = "guest" # if directly hit from browser URL, it might not have header
+
     c.execute("SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name FROM history h LEFT JOIN profiles p ON h.profile_id = p.id WHERE h.id=?", (history_id,))
     row = c.fetchone()
     conn.close()
+    
     if not row:
          raise HTTPException(status_code=404, detail="Not found")
+         
+    # Optional strict check if requested (if header provided)
+    if username != "guest" and row["username"] != username and role != "admin":
+         raise HTTPException(status_code=403, detail="Forbidden")
          
     # Generate download filename: 音色名字-语种-时间长度.wav
     dur_str = f"{row['duration']:.1f}s"

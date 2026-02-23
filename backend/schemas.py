@@ -13,6 +13,8 @@ class ProfileResponse(BaseModel):
     name: str
     description: Optional[str]
     created_at: str
+    owner: str = "amorwest"
+    is_default: int = 0
 
 class GenerationRequest(BaseModel):
     profile_id: str
@@ -30,3 +32,4 @@ class HistoryResponse(BaseModel):
     created_at: str
     duration: float
     instruct: Optional[str]
+    username: str = "amorwest"

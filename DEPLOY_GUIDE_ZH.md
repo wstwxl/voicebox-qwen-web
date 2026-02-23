@@ -85,7 +85,7 @@ cp ~/.acme.sh/xxxx_ecc/ amorwest.cn.key /path/to/voice_project/amorwest.cn.key
 ```bash
 ./run.sh
 ```
-确保显示正在监听 `Uvicorn running on http://0.0.0.0:6006`。
+确保显示正在监听 `Uvicorn running on https://0.0.0.0:6006`。此时前端已经自动套上了强力的多用户登录沙箱防火墙！
 
 **终端窗口 2（旧版手动方式）：启动 SakuraFrp 隧道**
 前往 SakuraFrp 后台获取针对 `Linux amd64` 的最新客户端并赋权后，手动启动（不推荐，容易假死断线）：
@@ -94,9 +94,17 @@ chmod +x frpc
 ./frpc -f 你的专属密钥参数
 ```
 
+**终端窗口 3（可选）：站长管理面板**
+作为在此宿主机上部署公网的管理员，别人在公网注册的所有信息、消耗的显存你都可以通过在宿主机本地终端呼出：
+```bash
+conda activate voicebox
+python scripts/admin_tool.py
+```
+使用这款无需命令记忆的 UI 交互看板，可以轻松封杀违规域外账号，或将私有音色提权为公用默认。
+
 ---
 
-### 🌟 进阶必备：给樱花穿透打上“不死金牌”（Systemd 守护进程守护）
+### 🌟 进阶必备：给樱花穿透与后端打上“不死金牌”（Systemd 守护进程守护）
 
 对于服务器来说，绝对不能靠在终端里手动运行 `./frpc` 来保持服务。遇到跨国网络阻断（`i/o timeout`）时，frpc 极易陷入“假死”等待，导致致命断线。我们需要把它做成“系统守护进程”（Systemd 服务），让 Linux 系统来当“监工”，一旦发现它死掉或假死，系统直接把它杀掉并在 5 秒钟内重新拉起。
 

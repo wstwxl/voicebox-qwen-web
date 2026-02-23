@@ -11,10 +11,118 @@ let profiles = [];
 let histories = [];
 
 // Init
-window.onload = () => {
+let currentUser = localStorage.getItem("voicebox_user");
+
+function initAuth() {
+    if (!currentUser) {
+        document.getElementById('app-container').classList.add('hidden');
+        showLoginModal();
+    } else {
+        setupApp();
+    }
+}
+
+function showLoginModal() {
+    const modalHtml = `
+    <div id="loginModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+        <div class="bg-card w-full max-w-sm rounded-2xl border border-slate-700 p-6 shadow-2xl">
+            <h2 class="text-2xl font-bold text-white mb-2">欢迎来到 Voicebox</h2>
+            <p class="text-sm text-gray-400 mb-6">请输入您的唯一用户名进入系统。若不存在将自动注册新账户。(仅限小写字母和数字)</p>
+            <input type="text" id="usernameInput" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-brand focus:ring-1 focus:ring-brand mb-4 transition-all" placeholder="例如: test01" autocomplete="off">
+            <button onclick="submitLogin()" class="w-full bg-brand hover:bg-brand-hover text-white font-medium py-3 rounded-lg transition-colors shadow-lg shadow-brand/20">
+                进入系统
+            </button>
+        </div>
+    </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+    document.getElementById('usernameInput').addEventListener('keypress', function (e) {
+        if (e.key === 'Enter') submitLogin();
+    });
+}
+
+window.submitLogin = function () {
+    const input = document.getElementById('usernameInput').value.trim();
+    if (!input) {
+        alert("用户名不能为空");
+        return;
+    }
+    if (!/^[a-z0-9]+$/.test(input)) {
+        alert("格式错误：仅支持纯小写字母和数字！");
+        return;
+    }
+
+    localStorage.setItem("voicebox_user", input);
+    currentUser = input;
+    document.getElementById('loginModal').remove();
+    setupApp();
+};
+
+window.logout = function () {
+    if (confirm("确定要退出当前账号吗？")) {
+        localStorage.removeItem("voicebox_user");
+        currentUser = null;
+
+        // Hide UI quickly
+        document.getElementById('app-container').classList.add('hidden');
+
+        // Un-tag header
+        const titleEl = document.querySelector('header h1');
+        if (titleEl) {
+            titleEl.innerHTML = '🎙️ Voicebox Qwen';
+            titleEl.removeAttribute('data-user-tagged');
+        }
+
+        showLoginModal();
+    }
+};
+
+function setupApp() {
+    // Inject custom fetch interceptor
+    const originalFetch = window.fetch;
+    window.fetch = async function () {
+        let [resource, config] = arguments;
+        if (!config) {
+            config = {};
+        }
+        if (!config.headers) {
+            config.headers = {};
+        }
+        // inject user header
+        config.headers['X-User-Name'] = currentUser;
+
+        let response = await originalFetch(resource, config);
+
+        // Handle auth rejection
+        if (response.status === 401 || response.status === 403) {
+            console.error("Auth Error", response.status);
+            if (response.status === 401) {
+                alert("登录态失效或身份伪造，请重新登录");
+                logout();
+            } else if (response.status === 403) {
+                alert("越权操作被拒绝！");
+            }
+        }
+        return response;
+    };
+
+    // Update UI title to show user
+    const titleEl = document.querySelector('header h1');
+    if (titleEl && !titleEl.getAttribute('data-user-tagged')) {
+        const adminTag = currentUser === 'admin123' ? ' <span class="text-xs bg-rose-500/20 text-rose-400 px-2 py-0.5 rounded ml-2 border border-rose-500/30 align-middle">超级管理员</span>' : '';
+        const userTag = ` <span class="text-xs bg-brand/20 text-brand px-2 py-0.5 rounded ml-2 border border-brand/30 align-middle cursor-pointer" onclick="logout()" title="点击退出">👦 ${currentUser}</span>`;
+        titleEl.innerHTML = titleEl.innerHTML + userTag + adminTag;
+        titleEl.setAttribute('data-user-tagged', 'true');
+    }
+
+    document.getElementById('app-container').classList.remove('hidden');
     loadProfiles();
     loadHistory();
 }
+
+// Ensure the page initializes immediately without waiting for full assets to load
+initAuth();
 
 // ---------------- UI Helpers ----------------
 let queuePollInterval = null;
@@ -135,23 +243,30 @@ async function loadProfiles() {
         if (profiles.length === 0) {
             profileList.innerHTML = '<div class="text-center text-sm text-gray-500 py-4">尚未提取音色，马上录一个吧！</div>';
         } else {
-            profileList.innerHTML = profiles.map(p => `
+            profileList.innerHTML = profiles.map(p => {
+                const isDefault = p.is_default === 1;
+                const tag = isDefault
+                    ? '<span class="ml-2 text-[10px] bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded border border-blue-500/30">公共默认</span>'
+                    : (p.owner === 'system' ? '<span class="ml-2 text-[10px] bg-purple-500/20 text-purple-400 px-1.5 py-0.5 rounded border border-purple-500/30">系统模板</span>' : '');
+
+                return `
                 <div class="flex items-center justify-between p-3 rounded-xl bg-card border border-slate-700/50 hover:border-brand/30 transition-colors group">
                     <div class="flex items-center space-x-3 truncate">
                         <div class="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-brand font-bold text-xs ring-2 ring-brand/20">${p.name.charAt(0)}</div>
-                        <div class="truncate">
+                        <div class="truncate flex items-center">
                             <h4 class="text-sm font-medium text-gray-200 truncate">${p.name}</h4>
-                            <p class="text-[10px] text-gray-400 truncate">${p.created_at.split('.')[0]}</p>
+                            ${tag}
                         </div>
                     </div>
                     
                     <div class="flex items-center space-x-2">
-                        <button onclick="deleteProfile('${p.id}')" class="text-gray-500 hover:text-rose-500 p-1.5 transition-colors" title="删除">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        <button onclick="deleteProfile('${p.id}')" class="text-gray-500 hover:text-rose-500 p-1.5 transition-colors" title="${isDefault && currentUser !== 'admin123' ? '不想看到它' : '彻底删除'}">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${isDefault && currentUser !== 'admin123' ? 'M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21' : 'M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16'}"></path></svg>
                         </button>
                     </div>
                 </div>
-            `).join('');
+                `;
+            }).join('');
         }
 
         // Render Dropdown
@@ -954,15 +1069,22 @@ async function loadHistory() {
                             </div>
                             <span class="text-[10px] text-gray-500">${timeStr} (${h.duration.toFixed(1)}s)</span>
                         </div>
-                        <p class="text-sm text-gray-300 leading-relaxed mb-3">${h.text}</p>
+                        <div class="text-sm text-gray-300 leading-relaxed mb-3">
+                            <div id="hist-text-short-${h.id}" class="${h.text.length > 100 ? '' : 'hidden'} text-left text-justify">
+${h.text.replace(/^【小剧场】\n?/, '').substring(0, 100)}...<span class="text-brand cursor-pointer hover:underline text-xs ml-1 whitespace-nowrap" onclick="document.getElementById('hist-text-short-${h.id}').classList.add('hidden'); document.getElementById('hist-text-full-${h.id}').classList.remove('hidden');">展开全部</span>
+                            </div>
+                            <div id="hist-text-full-${h.id}" class="${h.text.length > 100 ? 'hidden' : ''} whitespace-pre-wrap text-left text-justify">
+${h.text.replace(/^【小剧场】\n?/, '')}${h.text.length > 100 ? `<span class="text-brand cursor-pointer hover:underline text-xs ml-1 whitespace-nowrap" onclick="document.getElementById('hist-text-full-${h.id}').classList.add('hidden'); document.getElementById('hist-text-short-${h.id}').classList.remove('hidden');">收起</span>` : ''}
+                            </div>
+                        </div>
                         
                         <!-- 底部控制栏 -->
                         <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between bg-dark/50 rounded-lg p-2 gap-2 border border-slate-700/50">
-                            <!-- 浏览器原生暗黑播放器 -->
-                            <audio controls src="/audio/history/${h.id}" class="h-8 w-full sm:max-w-[200px] md:max-w-xs scale-90 origin-left sm:scale-100 brightness-90 contrast-125 sepia-0 hue-rotate-180 invert"></audio>
+                            <!-- 浏览器原生暗黑播放器，动态加载 src -->
+                            <audio controls class="h-8 w-full sm:max-w-[200px] md:max-w-xs scale-90 origin-left sm:scale-100 brightness-90 contrast-125 sepia-0 hue-rotate-180 invert" data-fetch-target="${h.id}"></audio>
                             
                             <div class="flex space-x-2 justify-end sm:justify-start">
-                                <button onclick="downloadSingle('${h.id}')" class="p-1.5 text-gray-400 hover:text-brand hover:bg-brand/10 rounded transition-colors" title="下载WAV">
+                                <button onclick="downloadSingle('${h.id}', '${h.profile_name}-${h.language}-${h.duration.toFixed(1)}s.wav')" class="p-1.5 text-gray-400 hover:text-brand hover:bg-brand/10 rounded transition-colors" title="下载WAV">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                                 </button>
                                 <button onclick="deleteHistory('${h.id}')" class="p-1.5 text-gray-500 hover:text-rose-500 hover:bg-rose-500/10 rounded transition-colors" title="删除">
@@ -974,6 +1096,19 @@ async function loadHistory() {
                 </div>
             </div>`;
         }).join('');
+
+        // Asynchronously load the audio blobs to ensure custom headers apply
+        document.querySelectorAll('audio[data-fetch-target]').forEach(async (audioEl) => {
+            try {
+                const id = audioEl.getAttribute('data-fetch-target');
+                const res = await fetch(`/audio/history/${id}`);
+                if (!res.ok) throw new Error("Audio load failed");
+                const blob = await res.blob();
+                audioEl.src = URL.createObjectURL(blob);
+            } catch (e) {
+                console.error('Prefetch audio error:', e);
+            }
+        });
 
     } catch (e) {
         console.error(e);
@@ -989,11 +1124,22 @@ async function deleteHistory(id) {
     } catch (e) { alert('删除失败'); }
 }
 
-function downloadSingle(id) {
-    const a = document.createElement('a');
-    a.href = `/audio/history/${id}`;
-    // It will auto download because browser handles attachment disposition
-    a.click();
+async function downloadSingle(id, filename) {
+    try {
+        const res = await fetch(`/audio/history/${id}`);
+        if (!res.ok) throw new Error("Download failed");
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    } catch (e) {
+        alert("下载失败: " + e.message);
+    }
 }
 
 async function downloadSelected() {
