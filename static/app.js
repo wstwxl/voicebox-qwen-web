@@ -70,7 +70,9 @@ window.logout = function () {
         // Un-tag header
         const titleEl = document.querySelector('header h1');
         if (titleEl) {
-            titleEl.innerHTML = '🎙️ Voicebox Qwen';
+            // Remove appended tags by selecting them via querySelectorAll and removing
+            const appenedTags = titleEl.querySelectorAll('span[data-auth-tag="true"]');
+            appenedTags.forEach(tag => tag.remove());
             titleEl.removeAttribute('data-user-tagged');
         }
 
@@ -110,9 +112,9 @@ function setupApp() {
     // Update UI title to show user
     const titleEl = document.querySelector('header h1');
     if (titleEl && !titleEl.getAttribute('data-user-tagged')) {
-        const adminTag = currentUser === 'admin123' ? ' <span class="text-xs bg-rose-500/20 text-rose-400 px-2 py-0.5 rounded ml-2 border border-rose-500/30 align-middle">超级管理员</span>' : '';
-        const userTag = ` <span class="text-xs bg-brand/20 text-brand px-2 py-0.5 rounded ml-2 border border-brand/30 align-middle cursor-pointer" onclick="logout()" title="点击退出">👦 ${currentUser}</span>`;
-        titleEl.innerHTML = titleEl.innerHTML + userTag + adminTag;
+        const adminTag = currentUser === 'admin123' ? ' <span data-auth-tag="true" class="text-xs bg-rose-500/20 text-rose-400 px-2 py-0.5 rounded ml-2 border border-rose-500/30 align-middle">超级管理员</span>' : '';
+        const userTag = ` <span data-auth-tag="true" class="text-xs bg-brand/20 text-brand px-2 py-0.5 rounded ml-2 border border-brand/30 align-middle cursor-pointer" onclick="logout()" title="点击退出">👦 ${currentUser}</span>`;
+        titleEl.insertAdjacentHTML('beforeend', userTag + adminTag);
         titleEl.setAttribute('data-user-tagged', 'true');
     }
 
@@ -123,6 +125,43 @@ function setupApp() {
 
 // Ensure the page initializes immediately without waiting for full assets to load
 initAuth();
+
+// ---------------- Server Connection Heartbeat ----------------
+function startHeartbeat() {
+    setInterval(async () => {
+        const statusBox = document.getElementById('serverStatusBox');
+        const statusDot = document.getElementById('serverStatusDot');
+        const statusText = document.getElementById('serverStatusText');
+
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 3000); // 3 second timeout for ping
+
+            const res = await fetch(`${API_BASE}/queue_status`, {
+                signal: controller.signal,
+                headers: { 'X-User-Name': currentUser || 'guest' }
+            });
+            clearTimeout(timeoutId);
+
+            if (res.ok) {
+                // Connection healthy
+                statusBox.className = "text-sm text-green-400 flex items-center space-x-2 transition-colors";
+                statusDot.className = "w-2 h-2 rounded-full bg-green-500 recording-dot box-shadow-green";
+                statusText.innerText = "Local Server Active";
+            } else {
+                throw new Error("HTTP " + res.status);
+            }
+        } catch (err) {
+            // Connection failed/timeout
+            statusBox.className = "text-sm text-rose-500 flex items-center space-x-2 transition-colors font-semibold";
+            statusDot.className = "w-2 h-2 rounded-full bg-rose-500 animate-pulse box-shadow-red";
+            statusText.innerText = "Server Disconnected";
+        }
+    }, 5000);
+}
+
+// Start heartbeat globally
+startHeartbeat();
 
 // ---------------- UI Helpers ----------------
 let queuePollInterval = null;

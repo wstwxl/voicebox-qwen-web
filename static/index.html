@@ -82,9 +82,9 @@
                     class="text-sm font-normal text-brand ml-2 border border-brand/30 bg-brand/10 px-2 py-0.5 rounded-full">Qwen3-TTS
                     RTX</span></h1>
         </div>
-        <div class="text-sm text-gray-400 flex items-center space-x-2">
-            <span class="w-2 h-2 rounded-full bg-green-500 recording-dot"></span>
-            <span>Local Server Active</span>
+        <div id="serverStatusBox" class="text-sm text-gray-400 flex items-center space-x-2 transition-colors">
+            <span id="serverStatusDot" class="w-2 h-2 rounded-full bg-green-500 recording-dot"></span>
+            <span id="serverStatusText">Local Server Active</span>
         </div>
     </header>
 
@@ -222,8 +222,8 @@
                     class="absolute -top-32 -right-32 w-64 h-64 bg-brand/20 blur-[100px] rounded-full pointer-events-none">
                 </div>
 
-                <h2 class="text-2xl font-semibold mb-6 flex items-center">
-                    <svg class="w-6 h-6 mr-2 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <h2 class="text-xl font-semibold mb-6 flex items-center">
+                    <svg class="w-5 h-5 mr-2 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                             d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z">
                         </path>
