@@ -1339,7 +1339,10 @@ async def list_history(request: Request):
     user_row = c.fetchone()
     role = user_row["role"] if user_row else "regular"
     
-    c.execute("SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name FROM history h LEFT JOIN profiles p ON h.profile_id = p.id WHERE h.username = ? ORDER BY h.created_at DESC", (username,))
+    if role == "admin":
+        c.execute("SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name FROM history h LEFT JOIN profiles p ON h.profile_id = p.id ORDER BY h.created_at DESC")
+    else:
+        c.execute("SELECT h.*, COALESCE(p.name, '已删除音色 (Deleted)') as profile_name FROM history h LEFT JOIN profiles p ON h.profile_id = p.id WHERE h.username = ? ORDER BY h.created_at DESC", (username,))
     rows = [dict(r) for r in c.fetchall()]
     
     # Enrich Theater items with detailed profile awareness
